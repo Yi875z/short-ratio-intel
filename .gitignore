@@ -1,0 +1,41 @@
+# 環境変数（最重要：絶対にコミットしない）
+.env
+
+# 仮想環境
+.venv/
+venv/
+
+# データ・DB（個人データ）
+data/
+*.db
+*.sqlite
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+# 例外：復旧用に保存した元bytecodeは必須
+!app/__pycache__/streamlit_app_original.cpython-311.pyc
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# トークンキャッシュ
+.jquants_token_cache.json
+
+# ログ
+*.log
+streamlit_*.log
+
+# 破損バックアップ
+*.corrupted_bak
+
+# graphify生成ファイル（大容量）
+graphify-out/

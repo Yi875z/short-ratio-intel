@@ -1,40 +1,49 @@
 # short-ratio-intel
 
-空売り比率インテリジェンス・システム
-NEO真金融グランドマスター × Gemini 3 Flash 統合分析エンジン
+空売り比率インテリジェンス・システム  
+J-Quants API + JPX空売り残高PDF + Gemini AI 統合分析エンジン
 
-## セットアップ
+---
+
+## 起動方法
+
+### ワンクリック起動（推奨）
+
+`アプリ起動.bat` をダブルクリックする。ブラウザが自動的に http://localhost:8501 を開く。
+
+### コマンドで起動する場合
+
+```powershell
+cd C:\CarSol\short-ratio-intel
+python -m streamlit run app\streamlit_app.py
+```
+
+---
+
+## 初回セットアップ
 
 ```powershell
 cd C:\CarSol\short-ratio-intel
 .\setup.ps1
 ```
 
-## ナレッジファイルの配置
+セットアップ後、`.env` ファイルにAPIキーを設定する。
 
 ```
-src\knowledge\files\ に以下の4ファイルをコピー:
-  01_global_macro.md   ← Global_Macro_Dynamics.md から
-  02_jpx_micro.md      ← JPX_Micro_Flows.md から
-  03_options_gex.md    ← Options_and_GEX_Master.md から
-  04_quant_psych.md    ← Quant_Tech_Psychology.md から
+JQUANTS_EMAIL=your_email
+JQUANTS_PASSWORD=your_password
+GEMINI_API_KEY=your_key
 ```
 
-## 起動
+---
 
-```powershell
-.venv\Scripts\Activate.ps1
-streamlit run app\streamlit_app.py
-```
+## 詳細な運用手順
 
-## 開発計画書
+[docs/operation_manual.md](docs/operation_manual.md) を参照。
 
-docs\development_plan.md を参照
+---
 
-## 運用マニュアル
+## ⚠️ 重要
 
-起動方法、日常運用、停止方法、トラブル対応、Web公開までの道筋は以下を参照してください。
-
-```
-docs\operation_manual.md
-```
+`app/__pycache__/streamlit_app_original.cpython-311.pyc` は絶対に削除しないこと。  
+アプリの実体がこのファイルに格納されている（詳細は運用マニュアル参照）。

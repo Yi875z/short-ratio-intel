@@ -57,3 +57,43 @@ def test_build_theme_transition_context_generates_current_when_missing(monkeypat
     assert "現在テーマの取得元: generated_for_prompt_only" in context
     assert "[新規] 半導体" in context
     assert "[消滅] 原油" in context
+
+
+def test_build_user_prompt_includes_quality_feedback(monkeypatch):
+    monkeypatch.setattr(
+        prompt_builder,
+        "build_market_context_bundle",
+        lambda **kwargs: type(
+            "Bundle",
+            (),
+            {
+                "combined_news_text": "",
+                "to_prompt_block": lambda self: "市場テーマ判定ブロック",
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        prompt_builder,
+        "build_theme_transition_context_for_prompt",
+        lambda *args, **kwargs: "市場テーマ履歴比較ブロック",
+    )
+    monkeypatch.setattr(
+        prompt_builder,
+        "get_market_short_ratio_df",
+        lambda **kwargs: __import__("pandas").DataFrame(),
+    )
+
+    prompt = prompt_builder.build_user_prompt(
+        target_date="2026-05-18",
+        today_summary={
+            "sector_data": [],
+            "market_breakdown": {},
+            "market_ratio": 43.0,
+        },
+        weekly_df=__import__("pandas").DataFrame(),
+        anomalies=[],
+        quality_feedback="前回の市場テーマ反映漏れを修正する。",
+    )
+
+    assert "【前回品質チェックからの改善指示】" in prompt
+    assert "前回の市場テーマ反映漏れを修正する。" in prompt

@@ -21,7 +21,10 @@ if str(ROOT) not in sys.path:
 from config.settings import GEMINI_MODEL, MARKET_NEWS_AUTO_FETCH, TAVILY_API_KEY
 from src.ai_engine.gemini_client import GeminiReportGenerator
 from src.ai_engine.prompt_builder import build_theme_transition_context_for_prompt
-from src.ai_engine.report_quality import evaluate_report_quality
+from src.ai_engine.report_quality import (
+    build_quality_feedback_prompt_block,
+    evaluate_report_quality,
+)
 from src.analyzer.anomaly_detector import AnomalyDetector
 from src.analyzer.flow_signal_analyzer import FlowSignalAnalyzer
 from src.analyzer.ratio_calculator import RatioCalculator
@@ -505,6 +508,12 @@ def _render_ai_report_tab(
 
     if st.button("Gemini AIレポートを生成", type="primary", use_container_width=True):
         with st.spinner("Geminiでレポート生成中..."):
+            previous_report = get_ai_report(selected_date)
+            quality_feedback = _build_quality_feedback_for_regeneration(
+                previous_report,
+                selected_date,
+                today_summary,
+            )
             generator = GeminiReportGenerator()
             report_obj, markdown = generator.generate_report(
                 selected_date,
@@ -513,6 +522,7 @@ def _render_ai_report_tab(
                 anomalies,
                 extra_news=manual_news,
                 auto_fetch_news=auto_fetch_news,
+                quality_feedback=quality_feedback,
             )
             save_ai_report(
                 selected_date,
@@ -537,6 +547,26 @@ def _render_ai_report_tab(
         )
     else:
         st.info("この日付のAIレポートはまだ生成されていません。")
+
+
+def _build_quality_feedback_for_regeneration(
+    previous_report,
+    selected_date: str,
+    today_summary: dict,
+) -> str:
+    if previous_report is None:
+        return ""
+
+    theme_transition_context = build_theme_transition_context_for_prompt(
+        target_date=selected_date,
+        today_summary=today_summary,
+    )
+    quality = evaluate_report_quality(
+        previous_report.report_markdown,
+        getattr(previous_report, "report_json", "") or "",
+        theme_transition_context=theme_transition_context,
+    )
+    return build_quality_feedback_prompt_block(quality)
 
 
 def _render_report_quality_panel(stored_report, today_summary: dict) -> None:

@@ -132,6 +132,7 @@ def build_user_prompt(
     anomalies: list,
     extra_news: str = "",
     auto_fetch_news: bool | None = None,
+    quality_feedback: str = "",
 ) -> str:
     """
     当日データ・週次推移・異常値を組み合わせたユーザープロンプト。
@@ -267,6 +268,12 @@ def build_user_prompt(
         today_summary=today_summary,
         current_news_text=market_context.combined_news_text,
     )
+    quality_feedback_block = ""
+    if quality_feedback:
+        quality_feedback_block = (
+            "【前回品質チェックからの改善指示】:\n"
+            f"{quality_feedback}"
+        )
 
     return f"""
 【分析対象日】: {target_date}
@@ -276,6 +283,8 @@ def build_user_prompt(
 
 【市場テーマ履歴・転換メモ】:
 {theme_transition_context}
+
+{quality_feedback_block}
 
 {f'【本日の追加ニュース】:{extra_news}' if extra_news else ''}
 

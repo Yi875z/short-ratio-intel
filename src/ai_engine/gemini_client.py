@@ -39,6 +39,7 @@ class GeminiReportGenerator:
         anomalies: list,
         extra_news: str = "",
         auto_fetch_news: bool | None = None,
+        quality_feedback: str = "",
     ) -> tuple[ReadingReport, str]:
         """
         レポートを生成する。
@@ -53,6 +54,7 @@ class GeminiReportGenerator:
             anomalies,
             extra_news,
             auto_fetch_news=auto_fetch_news,
+            quality_feedback=quality_feedback,
         )
 
         for attempt in range(self.MAX_RETRIES):

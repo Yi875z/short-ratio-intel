@@ -1,6 +1,9 @@
 import json
 
-from src.ai_engine.report_quality import evaluate_report_quality
+from src.ai_engine.report_quality import (
+    build_quality_feedback_prompt_block,
+    evaluate_report_quality,
+)
 
 
 def _complete_markdown(extra: str = "") -> str:
@@ -107,3 +110,28 @@ def test_report_quality_detects_theme_transition_not_reflected():
         item.check_name == "テーマ転換分析反映"
         for item in summary.failed_items
     )
+
+
+def test_quality_feedback_prompt_block_is_empty_when_no_failures():
+    summary = evaluate_report_quality(_complete_markdown(), _complete_json())
+
+    assert build_quality_feedback_prompt_block(summary) == ""
+
+
+def test_quality_feedback_prompt_block_lists_failed_items():
+    summary = evaluate_report_quality(
+        _complete_markdown(),
+        "",
+        theme_transition_context="""
+【市場テーマ履歴比較】
+- テーマ変化:
+  - [強化] 米金利: 今回5.0 / 前回3.0 / 差分+2.0
+""",
+    )
+
+    block = build_quality_feedback_prompt_block(summary)
+
+    assert "前回AIレポート品質チェックからの改善メモ" in block
+    assert "JSON保存" in block
+    assert "市場テーマ履歴・転換メモ" in block
+    assert "high項目は必ず解消" in block

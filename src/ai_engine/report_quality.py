@@ -69,6 +69,46 @@ class ReportQualitySummary:
         return rows
 
 
+def build_quality_feedback_prompt_block(
+    quality: ReportQualitySummary,
+    max_items: int = 8,
+) -> str:
+    """品質チェック結果を再生成用プロンプトの改善メモに変換する。"""
+    failed_items = sorted(
+        quality.failed_items,
+        key=lambda item: (
+            {"high": 0, "medium": 1, "low": 2}.get(item.severity, 9),
+            item.category,
+            item.check_name,
+        ),
+    )
+    if not failed_items:
+        return ""
+
+    lines = [
+        "【前回AIレポート品質チェックからの改善メモ】",
+        "- 注意: 以下は前回保存レポートの改善指示。今回入力された最新データを優先し、未確認データを事実として断定しない。",
+        f"- 前回品質判定: {quality.status_label} / スコア {quality.score_pct:.1f}% / 失敗項目 {len(failed_items)}件",
+        "- 修正すべき項目:",
+    ]
+
+    for item in failed_items[:max_items]:
+        lines.append(
+            f"  - [{item.severity}] {item.category}/{item.check_name}: {item.message}"
+        )
+        if item.evidence:
+            lines.append(f"    evidence: {_clip_single_line(item.evidence, 160)}")
+
+    lines.extend([
+        "- 再生成時の指示:",
+        "  - high項目は必ず解消する。",
+        "  - 市場テーマ履歴・転換メモの主要テーマ名と変化状態を `dominant_market_themes` と `theme_shift_analysis` に反映する。",
+        "  - 過剰断定表現は条件付き表現へ置き換える。",
+        "  - 投資判断ガードレール、反証条件、未確認データの区別を明記する。",
+    ])
+    return "\n".join(lines)
+
+
 REQUIRED_MARKDOWN_SECTIONS = [
     ("現在の支配的マクロ背景", "現在の支配的マクロ背景"),
     ("東証全体サマリー", "東証全体サマリー"),
@@ -310,3 +350,10 @@ def _transition_evidence(rows: list[dict[str, str]]) -> str:
         f"[{row.get('state', '')}] {row.get('name', '')}"
         for row in rows
     )
+
+
+def _clip_single_line(text: str, max_chars: int) -> str:
+    one_line = " ".join(str(text).split())
+    if len(one_line) <= max_chars:
+        return one_line
+    return one_line[:max_chars] + "..."

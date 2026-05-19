@@ -2,7 +2,7 @@
 Gemini API へのプロンプトを動的に構築するモジュール
 """
 import json
-from config.settings import CURRENT_MACRO_CONTEXT
+from config.settings import CURRENT_MACRO_CONTEXT, MARKET_NEWS_AUTO_FETCH
 from config.signal_thresholds import SIGNAL_THRESHOLDS
 from src.knowledge.loader import load_effective_knowledge
 from src.ai_engine.output_schema import ReadingReport
@@ -120,6 +120,7 @@ def build_user_prompt(
     weekly_df,
     anomalies: list,
     extra_news: str = "",
+    auto_fetch_news: bool | None = None,
 ) -> str:
     """
     当日データ・週次推移・異常値を組み合わせたユーザープロンプト。
@@ -246,6 +247,9 @@ def build_user_prompt(
         today_summary=today_summary,
         manual_news=extra_news,
         baseline_context=CURRENT_MACRO_CONTEXT,
+        auto_fetch_news=(
+            auto_fetch_news if auto_fetch_news is not None else MARKET_NEWS_AUTO_FETCH
+        ),
     )
 
     return f"""

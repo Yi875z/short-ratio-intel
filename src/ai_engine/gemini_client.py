@@ -38,6 +38,7 @@ class GeminiReportGenerator:
         weekly_df,
         anomalies: list,
         extra_news: str = "",
+        auto_fetch_news: bool | None = None,
     ) -> tuple[ReadingReport, str]:
         """
         レポートを生成する。
@@ -46,7 +47,12 @@ class GeminiReportGenerator:
             (ReadingReport Pydanticオブジェクト, 生のMarkdown文字列)
         """
         user_prompt = build_user_prompt(
-            target_date, today_summary, weekly_df, anomalies, extra_news
+            target_date,
+            today_summary,
+            weekly_df,
+            anomalies,
+            extra_news,
+            auto_fetch_news=auto_fetch_news,
         )
 
         for attempt in range(self.MAX_RETRIES):

@@ -22,6 +22,7 @@ from config.settings import GEMINI_MODEL, MARKET_NEWS_AUTO_FETCH, TAVILY_API_KEY
 from src.ai_engine.gemini_client import GeminiReportGenerator
 from src.ai_engine.prompt_builder import build_theme_transition_context_for_prompt
 from src.ai_engine.report_quality import (
+    build_quality_comparison,
     build_quality_feedback_prompt_block,
     build_quality_history_row,
     build_quality_review_markdown,
@@ -594,6 +595,18 @@ def _render_ai_report_tab(
     if st.button("Gemini AIレポートを生成", type="primary", use_container_width=True):
         with st.spinner("Geminiでレポート生成中..."):
             quality_feedback = quality_feedback_preview if use_quality_feedback else ""
+            before_quality_row = (
+                _build_report_quality_row_from_markdown(
+                    report_date=selected_date,
+                    markdown=stored_report.report_markdown,
+                    report_json=getattr(stored_report, "report_json", "") or "",
+                    today_summary=today_summary,
+                    model_used=getattr(stored_report, "model_used", "") or "",
+                    generated_at=getattr(stored_report, "generated_at", None),
+                )
+                if stored_report
+                else None
+            )
             generator = GeminiReportGenerator()
             report_obj, markdown = generator.generate_report(
                 selected_date,
@@ -604,17 +617,29 @@ def _render_ai_report_tab(
                 auto_fetch_news=auto_fetch_news,
                 quality_feedback=quality_feedback,
             )
+            report_json = report_obj.model_dump_json(ensure_ascii=False)
+            after_quality_row = _build_report_quality_row_from_markdown(
+                report_date=selected_date,
+                markdown=markdown,
+                report_json=report_json,
+                today_summary=today_summary,
+                model_used=GEMINI_MODEL,
+            )
+            st.session_state[f"quality_regen_comparison_{selected_date}"] = (
+                build_quality_comparison(before_quality_row, after_quality_row)
+            )
             save_ai_report(
                 selected_date,
                 report_obj.current_macro_context,
                 markdown,
-                report_json=report_obj.model_dump_json(ensure_ascii=False),
+                report_json=report_json,
                 model_used=GEMINI_MODEL,
             )
         st.success("AIレポートを保存しました。")
         st.rerun()
 
     if stored_report:
+        _render_quality_regeneration_comparison(selected_date)
         _render_report_quality_panel(stored_report, today_summary)
         st.markdown(stored_report.report_markdown)
         st.download_button(
@@ -724,6 +749,54 @@ def _render_report_quality_panel(stored_report, today_summary: dict) -> None:
         )
 
 
+def _render_quality_regeneration_comparison(selected_date: str) -> None:
+    comparison = st.session_state.get(f"quality_regen_comparison_{selected_date}")
+    if not comparison:
+        return
+
+    with st.expander("前回再生成の品質比較", expanded=True):
+        cols = st.columns(4)
+        cols[0].metric("結果", comparison.get("result", ""))
+        cols[1].metric(
+            "スコア",
+            _comparison_value(comparison.get("after_score_pct"), suffix="%"),
+            _comparison_delta(comparison.get("score_delta"), suffix="pt"),
+        )
+        cols[2].metric(
+            "未通過",
+            _comparison_value(comparison.get("after_failed_count"), suffix="件"),
+            _comparison_delta(comparison.get("failed_delta"), suffix="件"),
+            delta_color="inverse",
+        )
+        cols[3].metric(
+            "重大",
+            _comparison_value(comparison.get("after_high_count"), suffix="件"),
+            _comparison_delta(comparison.get("high_delta"), suffix="件"),
+            delta_color="inverse",
+        )
+
+        display_row = {
+            "日付": comparison.get("date", ""),
+            "結果": comparison.get("result", ""),
+            "再生成前判定": comparison.get("before_status", ""),
+            "再生成後判定": comparison.get("after_status", ""),
+            "再生成前スコア": comparison.get("before_score_pct"),
+            "再生成後スコア": comparison.get("after_score_pct"),
+            "スコア差分": comparison.get("score_delta"),
+            "未通過差分": comparison.get("failed_delta"),
+            "重大差分": comparison.get("high_delta"),
+        }
+        comparison_df = pd.DataFrame([display_row])
+        st.dataframe(comparison_df, hide_index=True, use_container_width=True)
+        st.download_button(
+            "品質比較CSVをダウンロード",
+            data=comparison_df.to_csv(index=False).encode("utf-8-sig"),
+            file_name=f"ai_report_quality_comparison_{selected_date}.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+
 def _render_history_tab(selected_date: str) -> None:
     st.subheader("保存済みデータ")
     data_dates = get_saved_short_ratio_dates()
@@ -800,19 +873,53 @@ def _build_report_quality_history_rows(report_dates: list[str]) -> list[dict]:
             continue
 
         today_summary = calc.get_today_summary(report_date) or {}
-        theme_transition_context = build_theme_transition_context_for_prompt(
-            target_date=report_date,
-            today_summary=today_summary,
-        )
-        rows.append(build_quality_history_row(
+        rows.append(_build_report_quality_row_from_markdown(
             report_date=report_date,
             markdown=report.report_markdown,
             report_json=getattr(report, "report_json", "") or "",
-            theme_transition_context=theme_transition_context,
+            today_summary=today_summary,
             model_used=getattr(report, "model_used", "") or "",
             generated_at=getattr(report, "generated_at", None),
         ))
     return rows
+
+
+def _build_report_quality_row_from_markdown(
+    report_date: str,
+    markdown: str,
+    report_json: str,
+    today_summary: dict,
+    model_used: str = "",
+    generated_at=None,
+) -> dict:
+    theme_transition_context = build_theme_transition_context_for_prompt(
+        target_date=report_date,
+        today_summary=today_summary,
+    )
+    return build_quality_history_row(
+        report_date=report_date,
+        markdown=markdown,
+        report_json=report_json,
+        theme_transition_context=theme_transition_context,
+        model_used=model_used,
+        generated_at=generated_at,
+    )
+
+
+def _comparison_value(value, suffix: str = "") -> str:
+    if value is None:
+        return "N/A"
+    if isinstance(value, float):
+        return f"{value:.1f}{suffix}"
+    return f"{value}{suffix}"
+
+
+def _comparison_delta(value, suffix: str = "") -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, float):
+        return f"{value:+.1f}{suffix}"
+    return f"{int(value):+d}{suffix}"
 
 
 def _sector_frame(rows: list[dict]) -> pd.DataFrame:

@@ -182,6 +182,63 @@ def build_quality_history_row(
     }
 
 
+def build_quality_comparison(
+    before: dict | None,
+    after: dict,
+) -> dict:
+    """再生成前後の品質履歴行を比較する。"""
+    before_score = _number_or_none(before, "score_pct")
+    after_score = float(after.get("score_pct", 0) or 0)
+    before_failed = _int_or_none(before, "failed_count")
+    after_failed = int(after.get("failed_count", 0) or 0)
+    before_high = _int_or_none(before, "high_count")
+    after_high = int(after.get("high_count", 0) or 0)
+
+    score_delta = None if before_score is None else round(after_score - before_score, 1)
+    failed_delta = None if before_failed is None else after_failed - before_failed
+    high_delta = None if before_high is None else after_high - before_high
+
+    has_improvement = (
+        (score_delta is not None and score_delta > 0)
+        or (failed_delta is not None and failed_delta < 0)
+        or (high_delta is not None and high_delta < 0)
+    )
+    has_worsening = (
+        (score_delta is not None and score_delta < 0)
+        or (failed_delta is not None and failed_delta > 0)
+        or (high_delta is not None and high_delta > 0)
+    )
+
+    if before is None:
+        result_label = "新規生成"
+    elif has_improvement and has_worsening:
+        result_label = "一部改善"
+    elif has_improvement:
+        result_label = "改善"
+    elif has_worsening:
+        result_label = "悪化"
+    else:
+        result_label = "横ばい"
+
+    return {
+        "date": after.get("date", before.get("date") if before else ""),
+        "result": result_label,
+        "before_status": before.get("status", "") if before else "",
+        "after_status": after.get("status", ""),
+        "before_score_pct": before_score,
+        "after_score_pct": after_score,
+        "score_delta": score_delta,
+        "before_failed_count": before_failed,
+        "after_failed_count": after_failed,
+        "failed_delta": failed_delta,
+        "before_high_count": before_high,
+        "after_high_count": after_high,
+        "high_delta": high_delta,
+        "before_generated_at": before.get("generated_at", "") if before else "",
+        "after_generated_at": after.get("generated_at", ""),
+    }
+
+
 REQUIRED_MARKDOWN_SECTIONS = [
     ("現在の支配的マクロ背景", "現在の支配的マクロ背景"),
     ("東証全体サマリー", "東証全体サマリー"),
@@ -438,3 +495,15 @@ def _format_generated_at(value: Any) -> str:
     if hasattr(value, "strftime"):
         return value.strftime("%Y-%m-%d %H:%M")
     return str(value)
+
+
+def _number_or_none(row: dict | None, key: str) -> float | None:
+    if row is None or row.get(key) is None:
+        return None
+    return float(row.get(key) or 0)
+
+
+def _int_or_none(row: dict | None, key: str) -> int | None:
+    if row is None or row.get(key) is None:
+        return None
+    return int(row.get(key) or 0)

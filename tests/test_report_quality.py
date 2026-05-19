@@ -2,6 +2,7 @@ import json
 from datetime import datetime
 
 from src.ai_engine.report_quality import (
+    build_quality_comparison,
     build_quality_feedback_prompt_block,
     build_quality_history_row,
     build_quality_review_markdown,
@@ -185,3 +186,43 @@ def test_quality_history_row_keeps_failed_counts():
     assert row["status"] == "要確認"
     assert row["failed_count"] >= 1
     assert row["medium_count"] >= 1
+
+
+def test_quality_comparison_detects_improvement():
+    before = {
+        "date": "2026-05-18",
+        "status": "要修正",
+        "score_pct": 65.0,
+        "failed_count": 7,
+        "high_count": 3,
+    }
+    after = {
+        "date": "2026-05-18",
+        "status": "要確認",
+        "score_pct": 85.0,
+        "failed_count": 2,
+        "high_count": 0,
+    }
+
+    comparison = build_quality_comparison(before, after)
+
+    assert comparison["result"] == "改善"
+    assert comparison["score_delta"] == 20.0
+    assert comparison["failed_delta"] == -5
+    assert comparison["high_delta"] == -3
+
+
+def test_quality_comparison_handles_new_report():
+    after = {
+        "date": "2026-05-19",
+        "status": "OK",
+        "score_pct": 100.0,
+        "failed_count": 0,
+        "high_count": 0,
+    }
+
+    comparison = build_quality_comparison(None, after)
+
+    assert comparison["result"] == "新規生成"
+    assert comparison["before_score_pct"] is None
+    assert comparison["score_delta"] is None

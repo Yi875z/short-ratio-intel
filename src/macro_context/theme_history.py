@@ -73,6 +73,56 @@ def build_theme_history_rows(snapshots_by_date: dict[str, list[dict]]) -> list[d
     return rows
 
 
+def build_theme_transition_prompt_block(
+    target_date: str,
+    current_themes: list[dict],
+    previous_themes: list[dict],
+    previous_date: str | None = None,
+    current_source: str = "saved",
+    max_rows: int = 6,
+) -> str:
+    """AIプロンプトへ入れる市場テーマ転換メモを作る。"""
+    lines = [
+        "【市場テーマ履歴比較】",
+        f"- 対象日: {target_date}",
+        f"- 現在テーマの取得元: {current_source}",
+        f"- 比較基準日: {previous_date if previous_date else '前回保存データなし'}",
+        "- 注意: スコア差分はテーマ候補の強弱を示す補助情報であり、指数・金利・為替などの実測値ではない。",
+    ]
+
+    if not current_themes and not previous_themes:
+        lines.extend([
+            "- 保存済みテーマ履歴なし。今回入力された市場テーマ判定だけを使う。",
+            "- `theme_shift_analysis` では、履歴比較ではなく今回入力内の根拠に限定して条件付きで書く。",
+        ])
+        return "\n".join(lines)
+
+    rows = build_theme_comparison_rows(current_themes, previous_themes)
+    if not rows:
+        lines.append("- 比較可能なテーマ行なし。")
+        return "\n".join(lines)
+
+    lines.append("- テーマ変化:")
+    for row in rows[:max_rows]:
+        current_score = _format_optional_score(row.get("current_score"))
+        previous_score = _format_optional_score(row.get("previous_score"))
+        score_change = _format_score_change(row.get("score_change"))
+        related = row.get("related_sectors") or "関連業種未特定"
+        lines.append(
+            f"  - [{row['state']}] {row['name']}: "
+            f"今回{current_score} / 前回{previous_score} / 差分{score_change} / "
+            f"今回状態={row.get('current_status') or 'N/A'} / 関連業種={related}"
+        )
+
+    lines.extend([
+        "- 解釈指示:",
+        "  - 新規・強化テーマは `dominant_market_themes` と `theme_shift_analysis` へ優先的に反映する。",
+        "  - 弱体化・消滅テーマは、前提テーマの後退または市場の関心移動として条件付きで扱う。",
+        "  - テーマ変化と業種別空売り比率・価格規制あり/なしが整合するかを `theme_sector_alignment` に明記する。",
+    ])
+    return "\n".join(lines)
+
+
 def find_previous_theme_date(dates: list[str], selected_date: str) -> str | None:
     """選択日より前の直近テーマ保存日を返す。"""
     previous_dates = [date_value for date_value in dates if date_value < selected_date]
@@ -92,6 +142,24 @@ def _score(theme: dict | None) -> float:
         return round(float(theme.get("score", 0) or 0), 2)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _format_optional_score(value) -> str:
+    if value is None:
+        return "N/A"
+    try:
+        return f"{float(value):.1f}"
+    except (TypeError, ValueError):
+        return "N/A"
+
+
+def _format_score_change(value) -> str:
+    if value is None:
+        return "N/A"
+    try:
+        return f"{float(value):+.1f}"
+    except (TypeError, ValueError):
+        return "N/A"
 
 
 def _comparison_sort_key(row: dict) -> tuple:

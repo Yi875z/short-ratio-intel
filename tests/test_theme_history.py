@@ -1,6 +1,7 @@
 from src.macro_context.theme_history import (
     build_theme_comparison_rows,
     build_theme_history_rows,
+    build_theme_transition_prompt_block,
     find_previous_theme_date,
 )
 
@@ -61,3 +62,34 @@ def test_build_theme_history_rows_flattens_snapshots_by_date():
         "related_sectors": "銀行業, 不動産業",
         "unverified_count": 1,
     }]
+
+
+def test_build_theme_transition_prompt_block_renders_change_instruction():
+    block = build_theme_transition_prompt_block(
+        target_date="2026-05-18",
+        previous_date="2026-05-17",
+        current_source="saved_snapshot",
+        current_themes=[
+            {
+                "key": "rates",
+                "name": "米金利",
+                "score": 5.0,
+                "status": "主テーマ候補",
+                "related_sectors": ["銀行業"],
+            }
+        ],
+        previous_themes=[
+            {
+                "key": "rates",
+                "name": "米金利",
+                "score": 3.0,
+                "status": "監視候補",
+                "related_sectors": ["銀行業"],
+            }
+        ],
+    )
+
+    assert "【市場テーマ履歴比較】" in block
+    assert "[強化] 米金利" in block
+    assert "theme_shift_analysis" in block
+    assert "実測値ではない" in block

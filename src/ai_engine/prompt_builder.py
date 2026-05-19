@@ -6,8 +6,19 @@ from config.settings import CURRENT_MACRO_CONTEXT, MARKET_NEWS_AUTO_FETCH
 from config.signal_thresholds import SIGNAL_THRESHOLDS
 from src.knowledge.loader import load_effective_knowledge
 from src.ai_engine.output_schema import ReadingReport
-from src.macro_context.context_builder import build_market_context_bundle
-from src.storage.db import get_market_short_ratio_df
+from src.macro_context.context_builder import (
+    build_market_context_bundle,
+    build_theme_snapshot_dicts,
+)
+from src.macro_context.theme_history import (
+    build_theme_transition_prompt_block,
+    find_previous_theme_date,
+)
+from src.storage.db import (
+    get_market_short_ratio_df,
+    get_market_theme_snapshot_dates,
+    get_market_theme_snapshots,
+)
 
 
 def build_system_prompt() -> str:
@@ -251,12 +262,20 @@ def build_user_prompt(
             auto_fetch_news if auto_fetch_news is not None else MARKET_NEWS_AUTO_FETCH
         ),
     )
+    theme_transition_context = build_theme_transition_context_for_prompt(
+        target_date=target_date,
+        today_summary=today_summary,
+        current_news_text=market_context.combined_news_text,
+    )
 
     return f"""
 【分析対象日】: {target_date}
 
 【現在の支配的マクロ背景・市場テーマ判定】:
 {market_context.to_prompt_block()}
+
+【市場テーマ履歴・転換メモ】:
+{theme_transition_context}
 
 {f'【本日の追加ニュース】:{extra_news}' if extra_news else ''}
 
@@ -302,6 +321,41 @@ def build_user_prompt(
 出力では `investment_guardrails`、`confirmation_conditions`、`false_positive_risks`、`additional_data_to_check` に必ず投資判断ガードレールを記述してください。
 出力では `dominant_market_themes`、`theme_shift_analysis`、`theme_sector_alignment`、`unverified_market_data` に必ず市場テーマ判定を記述してください。
 """
+
+
+def build_theme_transition_context_for_prompt(
+    target_date: str,
+    today_summary: dict,
+    current_news_text: str = "",
+) -> str:
+    """
+    保存済み市場テーマ履歴をAIプロンプト用の転換メモへ変換する。
+
+    対象日の保存済みテーマがない場合は、今回の入力文脈から一時的に
+    テーマ判定を作り、前回保存テーマと比較する。DBへは保存しない。
+    """
+    theme_dates = sorted(get_market_theme_snapshot_dates(limit=30))
+    previous_date = find_previous_theme_date(theme_dates, target_date)
+    previous_themes = get_market_theme_snapshots(previous_date) if previous_date else []
+
+    current_themes = get_market_theme_snapshots(target_date)
+    current_source = "saved_snapshot"
+    if not current_themes:
+        current_themes = build_theme_snapshot_dicts(
+            target_date,
+            today_summary,
+            manual_news=current_news_text,
+            baseline_context=CURRENT_MACRO_CONTEXT,
+        )
+        current_source = "generated_for_prompt_only"
+
+    return build_theme_transition_prompt_block(
+        target_date=target_date,
+        current_themes=current_themes,
+        previous_themes=previous_themes,
+        previous_date=previous_date,
+        current_source=current_source,
+    )
 
 
 def _clip(text: str, max_chars: int) -> str:

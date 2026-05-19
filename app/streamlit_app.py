@@ -114,8 +114,28 @@ def _sidebar() -> str | None:
             selected_date = st.selectbox("分析日", dates, index=0)
 
         manual_date = st.date_input("取得日", value=date.today())
+        target_preview_date = manual_date.strftime("%Y-%m-%d")
+        if dates:
+            st.caption(f"DB最新保存日: {dates[0]}")
+
+        with st.expander("取得見込みチェック", expanded=False):
+            st.caption("指定日のデータが公開済みか、DBへ保存する前に確認します。")
+            if st.button("指定日の取得可否を確認", use_container_width=True):
+                with st.spinner(f"{target_preview_date} の公開状況を確認中..."):
+                    availability = check_short_ratio_source_availability(
+                        target_preview_date,
+                        saved_dates=dates,
+                    )
+                st.session_state[f"fetch_availability_{target_preview_date}"] = availability
+
+            availability = st.session_state.get(
+                f"fetch_availability_{target_preview_date}"
+            )
+            if availability:
+                _show_fetch_availability(availability)
+
         if st.button("指定日を取得", use_container_width=True):
-            target = manual_date.strftime("%Y-%m-%d")
+            target = target_preview_date
             with st.spinner(f"{target} の空売りデータを取得中..."):
                 result = fetch_and_store_short_ratio_date(target)
             _show_fetch_result(result)
@@ -166,6 +186,59 @@ def fetch_and_store_short_ratio_date(target_date: str) -> dict:
         "saved_market": saved_market,
         "sector_source": sector_source if sector_records else "none",
         "market_source": market_source if market_record else "none",
+    }
+
+
+def check_short_ratio_source_availability(
+    target_date: str,
+    saved_dates: list[str] | None = None,
+) -> dict:
+    """指定日の取得可否をDB書き込みなしで確認する。"""
+    saved_dates = saved_dates if saved_dates is not None else get_saved_short_ratio_dates()
+    scraper = JQuantsClient()
+    jpx = JPXShortSellingClient()
+
+    sector_records = jpx.get_sector_breakdown_by_date(target_date)
+    sector_source = "jpx_pdf"
+    if not sector_records:
+        sector_records = scraper.get_short_ratio_by_date(target_date)
+        sector_source = "stock-marketdata"
+
+    market_record = jpx.get_market_breakdown_by_date(target_date)
+    market_source = "jpx_pdf"
+    if not market_record:
+        market_record = scraper.get_market_short_ratio_by_date(target_date)
+        market_source = "stock-marketdata"
+
+    sector_count = len(sector_records)
+    market_available = bool(market_record)
+    can_fetch = bool(sector_count and market_available)
+    partial = bool((sector_count or market_available) and not can_fetch)
+
+    if can_fetch:
+        status = "取得可能"
+        if target_date in saved_dates:
+            message = "DB保存済みです。再取得すると公開元の最新データで更新できます。"
+        else:
+            message = "業種別データと東証全体データの両方が公開元で確認できました。"
+    elif partial:
+        status = "一部取得可能"
+        message = "業種別データまたは東証全体データのどちらかが未取得です。保存前に再確認してください。"
+    else:
+        status = "未公開または取得不可"
+        message = "現時点では公開元に対象日データが見つかりません。公開待ち、非営業日、通信制限の可能性があります。"
+
+    return {
+        "target_date": target_date,
+        "saved_in_db": target_date in saved_dates,
+        "status": status,
+        "message": message,
+        "can_fetch": can_fetch,
+        "partial": partial,
+        "sector_count": sector_count,
+        "market_available": market_available,
+        "sector_source": sector_source if sector_count else "none",
+        "market_source": market_source if market_available else "none",
     }
 
 
@@ -680,6 +753,28 @@ def _show_fetch_result(result: dict) -> None:
         f"業種 {result.get('saved_sector', 0)}件 / "
         f"市場全体 {result.get('saved_market', 0)}件"
     )
+    st.caption(
+        f"sector_source={result.get('sector_source')} / "
+        f"market_source={result.get('market_source')}"
+    )
+
+
+def _show_fetch_availability(result: dict) -> None:
+    message = (
+        f"{result.get('target_date')} / {result.get('status')} / "
+        f"業種 {result.get('sector_count', 0)}件 / "
+        f"市場全体 {'あり' if result.get('market_available') else 'なし'}"
+    )
+    if result.get("can_fetch"):
+        st.success(message)
+    elif result.get("partial"):
+        st.warning(message)
+    else:
+        st.info(message)
+
+    if result.get("saved_in_db"):
+        st.caption("DB保存済みの日付です。")
+    st.caption(result.get("message", ""))
     st.caption(
         f"sector_source={result.get('sector_source')} / "
         f"market_source={result.get('market_source')}"

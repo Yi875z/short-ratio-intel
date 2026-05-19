@@ -109,6 +109,49 @@ def build_quality_feedback_prompt_block(
     return "\n".join(lines)
 
 
+def build_quality_review_markdown(
+    quality: ReportQualitySummary,
+    report_date: str = "",
+    quality_feedback: str = "",
+) -> str:
+    """品質チェック結果を保存・共有しやすいMarkdownにする。"""
+    title_date = f" {report_date}" if report_date else ""
+    lines = [
+        f"# AIレポート品質レビュー{title_date}",
+        "",
+        "## サマリー",
+        f"- 判定: {quality.status_label}",
+        f"- スコア: {quality.score_pct:.1f}%",
+        f"- 重大: {quality.high_count}件",
+        f"- 要確認: {len(quality.failed_items)}件",
+        "",
+        "## 未通過項目",
+    ]
+
+    if not quality.failed_items:
+        lines.append("- 未通過項目はありません。")
+    else:
+        for item in quality.failed_items:
+            lines.extend([
+                f"### {item.category} / {item.check_name}",
+                f"- severity: {item.severity}",
+                f"- message: {item.message}",
+            ])
+            if item.evidence:
+                lines.append(f"- evidence: {_clip_single_line(item.evidence, 300)}")
+            lines.append("")
+
+    if quality_feedback:
+        lines.extend([
+            "",
+            "## 再生成用改善メモ",
+            "",
+            quality_feedback,
+        ])
+
+    return "\n".join(lines).strip() + "\n"
+
+
 REQUIRED_MARKDOWN_SECTIONS = [
     ("現在の支配的マクロ背景", "現在の支配的マクロ背景"),
     ("東証全体サマリー", "東証全体サマリー"),

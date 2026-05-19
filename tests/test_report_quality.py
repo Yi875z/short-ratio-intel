@@ -2,6 +2,7 @@ import json
 
 from src.ai_engine.report_quality import (
     build_quality_feedback_prompt_block,
+    build_quality_review_markdown,
     evaluate_report_quality,
 )
 
@@ -135,3 +136,20 @@ def test_quality_feedback_prompt_block_lists_failed_items():
     assert "JSON保存" in block
     assert "市場テーマ履歴・転換メモ" in block
     assert "high項目は必ず解消" in block
+
+
+def test_quality_review_markdown_contains_summary_and_feedback():
+    summary = evaluate_report_quality(_complete_markdown(), "")
+    feedback = build_quality_feedback_prompt_block(summary)
+
+    markdown = build_quality_review_markdown(
+        summary,
+        report_date="2026-05-18",
+        quality_feedback=feedback,
+    )
+
+    assert "# AIレポート品質レビュー 2026-05-18" in markdown
+    assert "- 判定: 要確認" in markdown
+    assert "## 未通過項目" in markdown
+    assert "## 再生成用改善メモ" in markdown
+    assert "JSON保存" in markdown

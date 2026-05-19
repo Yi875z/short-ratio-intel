@@ -23,6 +23,7 @@ from src.ai_engine.gemini_client import GeminiReportGenerator
 from src.ai_engine.prompt_builder import build_theme_transition_context_for_prompt
 from src.ai_engine.report_quality import (
     build_quality_feedback_prompt_block,
+    build_quality_review_markdown,
     evaluate_report_quality,
 )
 from src.analyzer.anomaly_detector import AnomalyDetector
@@ -622,6 +623,31 @@ def _render_report_quality_panel(stored_report, today_summary: dict) -> None:
                 hide_index=True,
                 use_container_width=True,
             )
+
+        quality_feedback = build_quality_feedback_prompt_block(quality)
+        quality_rows_csv = pd.DataFrame(
+            quality.to_rows(include_passed=True)
+        ).to_csv(index=False).encode("utf-8-sig")
+        quality_review_md = build_quality_review_markdown(
+            quality,
+            report_date=stored_report.date,
+            quality_feedback=quality_feedback,
+        )
+        dl_cols = st.columns(2)
+        dl_cols[0].download_button(
+            "品質チェックCSVをダウンロード",
+            data=quality_rows_csv,
+            file_name=f"ai_report_quality_{stored_report.date}.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+        dl_cols[1].download_button(
+            "品質レビューMarkdownをダウンロード",
+            data=quality_review_md.encode("utf-8"),
+            file_name=f"ai_report_quality_review_{stored_report.date}.md",
+            mime="text/markdown",
+            use_container_width=True,
+        )
 
 
 def _render_history_tab(selected_date: str) -> None:

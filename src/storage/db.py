@@ -465,6 +465,21 @@ def get_market_theme_snapshots(date: str) -> list[dict]:
     return result
 
 
+def get_market_theme_snapshot_dates(limit: int = 30) -> list[str]:
+    """市場テーマ判定が保存されている日付一覧を新しい順で返す。"""
+    engine = get_db_engine()
+    with Session(engine) as session:
+        stmt = (
+            select(MarketThemeSnapshot.date)
+            .distinct()
+            .order_by(desc(MarketThemeSnapshot.date))
+        )
+        if limit:
+            stmt = stmt.limit(limit)
+        rows = session.execute(stmt).scalars().all()
+    return list(rows)
+
+
 def save_market_news_snapshots(date: str, news_items: list[dict]) -> int:
     """ニュース検索結果を日付単位でUPSERTする。"""
     if not news_items:

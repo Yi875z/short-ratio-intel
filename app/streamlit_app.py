@@ -30,12 +30,18 @@ from src.macro_context.context_builder import (
     build_market_context_bundle,
     build_theme_snapshot_dicts,
 )
+from src.macro_context.theme_history import (
+    build_theme_comparison_rows,
+    build_theme_history_rows,
+    find_previous_theme_date,
+)
 from src.storage.db import (
     delete_short_ratio_records_for_dates,
     get_ai_report,
     get_ai_report_dates,
     get_market_news_snapshots,
     get_market_short_ratio_df,
+    get_market_theme_snapshot_dates,
     get_market_theme_snapshots,
     get_saved_short_ratio_dates,
     save_ai_report,
@@ -404,6 +410,78 @@ def _render_market_theme_tab(selected_date: str, today_summary: dict) -> None:
     if saved_news:
         st.subheader("保存済みニュース")
         st.dataframe(pd.DataFrame(saved_news), hide_index=True, use_container_width=True)
+
+    _render_market_theme_history(selected_date)
+
+
+def _render_market_theme_history(selected_date: str) -> None:
+    st.subheader("市場テーマ履歴")
+    theme_dates_desc = get_market_theme_snapshot_dates(limit=30)
+    if not theme_dates_desc:
+        st.info("市場テーマ履歴はまだありません。")
+        return
+
+    theme_dates = sorted(theme_dates_desc)
+    snapshots_by_date = {
+        date_value: get_market_theme_snapshots(date_value)
+        for date_value in theme_dates
+    }
+    current_themes = snapshots_by_date.get(selected_date, [])
+    previous_date = find_previous_theme_date(theme_dates, selected_date)
+    previous_themes = snapshots_by_date.get(previous_date, []) if previous_date else []
+
+    compare_col, trend_col = st.columns([1, 1])
+    with compare_col:
+        st.caption(
+            f"比較対象: {selected_date}"
+            + (f" vs {previous_date}" if previous_date else "（前回データなし）")
+        )
+        if current_themes or previous_themes:
+            comparison_rows = build_theme_comparison_rows(current_themes, previous_themes)
+            st.dataframe(
+                pd.DataFrame(comparison_rows),
+                hide_index=True,
+                use_container_width=True,
+            )
+        else:
+            st.info("選択日の市場テーマ判定はまだ保存されていません。")
+
+    history_rows = build_theme_history_rows(snapshots_by_date)
+    if not history_rows:
+        return
+
+    history_df = pd.DataFrame(history_rows)
+    with trend_col:
+        visible_themes = _select_history_theme_names(history_df, current_themes)
+        chart_df = history_df[history_df["name"].isin(visible_themes)]
+        if not chart_df.empty:
+            fig = px.line(
+                chart_df,
+                x="date",
+                y="score",
+                color="name",
+                markers=True,
+                title="市場テーマ スコア推移",
+            )
+            fig.update_layout(height=360, margin=dict(l=10, r=10, t=50, b=10))
+            st.plotly_chart(fig, use_container_width=True)
+
+    st.dataframe(
+        history_df.sort_values(["date", "score"], ascending=[False, False]),
+        hide_index=True,
+        use_container_width=True,
+    )
+
+
+def _select_history_theme_names(history_df: pd.DataFrame, current_themes: list[dict]) -> list[str]:
+    current_names = [theme.get("name") for theme in current_themes if theme.get("name")]
+    if current_names:
+        return current_names[:5]
+    latest_date = history_df["date"].max()
+    latest = history_df[history_df["date"] == latest_date].sort_values(
+        "score", ascending=False
+    )
+    return latest["name"].head(5).tolist()
 
 
 def _render_ai_report_tab(

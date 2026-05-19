@@ -6,7 +6,7 @@ from config.settings import CURRENT_MACRO_CONTEXT
 from config.signal_thresholds import SIGNAL_THRESHOLDS
 from src.knowledge.loader import load_effective_knowledge
 from src.ai_engine.output_schema import ReadingReport
-from src.macro_context.theme_detector import build_market_theme_context
+from src.macro_context.context_builder import build_market_context_bundle
 from src.storage.db import get_market_short_ratio_df
 
 
@@ -241,10 +241,10 @@ def build_user_prompt(
             f"市場売買代金シェア{(other_volume / market_volume * 100) if market_volume else 0:.1f}%"
         )
 
-    market_theme_context = build_market_theme_context(
+    market_context = build_market_context_bundle(
         target_date=target_date,
         today_summary=today_summary,
-        extra_news=extra_news,
+        manual_news=extra_news,
         baseline_context=CURRENT_MACRO_CONTEXT,
     )
 
@@ -252,7 +252,7 @@ def build_user_prompt(
 【分析対象日】: {target_date}
 
 【現在の支配的マクロ背景・市場テーマ判定】:
-{market_theme_context}
+{market_context.to_prompt_block()}
 
 {f'【本日の追加ニュース】:{extra_news}' if extra_news else ''}
 

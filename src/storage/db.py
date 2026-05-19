@@ -15,6 +15,7 @@ from config.settings import DB_PATH, REPORTS_DIR
 from src.storage.models import (
     AiReport,
     Base,
+    MarketNewsSnapshot,
     MarketShortRatioDaily,
     MarketThemeSnapshot,
     ShortRatioDaily,
@@ -462,3 +463,68 @@ def get_market_theme_snapshots(date: str) -> list[dict]:
             "unverified_data": json.loads(row.unverified_data_json or "[]"),
         })
     return result
+
+
+def save_market_news_snapshots(date: str, news_items: list[dict]) -> int:
+    """ニュース検索結果を日付単位でUPSERTする。"""
+    if not news_items:
+        return 0
+
+    engine = get_db_engine()
+    saved = 0
+    with Session(engine) as session:
+        for item in news_items:
+            url = item.get("url", "") or ""
+            title = item.get("title", "") or ""
+            existing = session.execute(
+                select(MarketNewsSnapshot).where(
+                    MarketNewsSnapshot.date == date,
+                    MarketNewsSnapshot.url == url,
+                    MarketNewsSnapshot.title == title,
+                )
+            ).scalar_one_or_none()
+
+            values = {
+                "query": item.get("query", ""),
+                "source": item.get("source", ""),
+                "published_date": item.get("published_date", ""),
+                "snippet": item.get("snippet", ""),
+                "score": float(item.get("score", 0) or 0),
+            }
+            if existing:
+                for key, value in values.items():
+                    setattr(existing, key, value)
+            else:
+                session.add(MarketNewsSnapshot(
+                    date=date,
+                    title=title,
+                    url=url,
+                    **values,
+                ))
+            saved += 1
+        session.commit()
+
+    logger.info(f"市場ニュース {saved}件を保存しました: {date}")
+    return saved
+
+
+def get_market_news_snapshots(date: str) -> list[dict]:
+    """指定日のニュース検索結果を取得する。"""
+    engine = get_db_engine()
+    with Session(engine) as session:
+        rows = session.execute(
+            select(MarketNewsSnapshot)
+            .where(MarketNewsSnapshot.date == date)
+            .order_by(desc(MarketNewsSnapshot.score))
+        ).scalars().all()
+
+    return [{
+        "date": row.date,
+        "query": row.query,
+        "title": row.title,
+        "url": row.url,
+        "source": row.source,
+        "published_date": row.published_date,
+        "snippet": row.snippet,
+        "score": row.score,
+    } for row in rows]

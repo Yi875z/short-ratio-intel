@@ -115,3 +115,27 @@ class MarketThemeSnapshot(Base):
 
     def __repr__(self) -> str:
         return f"<MarketThemeSnapshot date={self.date} theme={self.theme_name}>"
+
+
+class MarketNewsSnapshot(Base):
+    """日次の市場ニュース検索結果スナップショット"""
+
+    __tablename__ = "market_news_snapshots"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    date = Column(String(10), nullable=False, index=True)
+    query = Column(String(300), nullable=False, default="")
+    title = Column(String(500), nullable=False, default="")
+    url = Column(String(1000), nullable=False, default="")
+    source = Column(String(200), nullable=False, default="")
+    published_date = Column(String(50), nullable=False, default="")
+    snippet = Column(String, nullable=False, default="")
+    score = Column(Float, nullable=False, default=0)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("date", "url", "title", name="uq_date_news_item"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<MarketNewsSnapshot date={self.date} title={self.title[:30]}>"

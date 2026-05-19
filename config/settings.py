@@ -10,6 +10,13 @@ from dotenv import load_dotenv
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
 
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
 # ---- J-Quants ----
 JQUANTS_API_KEY: str = os.getenv("JQUANTS_API_KEY", "")
 JQUANTS_BASE_URL: str = "https://api.jquants.com"
@@ -44,6 +51,9 @@ HISTORY_DAYS_FOR_ZSCORE: int = 30     # Zスコア計算に使う過去日数
 # ---- 市場テーマ判定 ----
 MARKET_THEME_MAX_ITEMS: int = int(os.getenv("MARKET_THEME_MAX_ITEMS", "3"))
 MARKET_THEME_MIN_SCORE: float = float(os.getenv("MARKET_THEME_MIN_SCORE", "2.0"))
+MARKET_NEWS_AUTO_FETCH: bool = _env_bool("MARKET_NEWS_AUTO_FETCH", False)
+MARKET_NEWS_MAX_RESULTS: int = int(os.getenv("MARKET_NEWS_MAX_RESULTS", "5"))
+MARKET_NEWS_TIMEOUT_SECONDS: int = int(os.getenv("MARKET_NEWS_TIMEOUT_SECONDS", "20"))
 
 # ---- 現在のマクロ背景（Step 0プロトコル） ----
 # ⚠️ 重要: 相場環境が変化したら必ずここを更新すること

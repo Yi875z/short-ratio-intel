@@ -4,6 +4,7 @@ AIレポートの品質チェックを画面表示用に集約する。
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -101,6 +102,7 @@ def evaluate_report_quality(
     markdown: str,
     report_json: str | None = "",
     input_text: str = "",
+    theme_transition_context: str = "",
 ) -> ReportQualitySummary:
     """保存済みAIレポートの品質を軽量に評価する。"""
     items: list[ReportQualityItem] = []
@@ -157,6 +159,12 @@ def evaluate_report_quality(
         ))
         items.extend(_evaluate_json_fields(data))
 
+    items.extend(_evaluate_theme_transition_reflection(
+        markdown=markdown,
+        data=data,
+        theme_transition_context=theme_transition_context,
+    ))
+
     return ReportQualitySummary(items=items)
 
 
@@ -205,3 +213,100 @@ def _parse_report_json(report_json: str | None) -> dict[str, Any] | None:
     except json.JSONDecodeError:
         return None
     return data if isinstance(data, dict) else None
+
+
+def _evaluate_theme_transition_reflection(
+    markdown: str,
+    data: dict[str, Any] | None,
+    theme_transition_context: str,
+) -> list[ReportQualityItem]:
+    if not theme_transition_context:
+        return []
+
+    items: list[ReportQualityItem] = []
+    transition_rows = _extract_transition_rows(theme_transition_context)
+    if not transition_rows:
+        items.append(ReportQualityItem(
+            category="テーマ転換反映",
+            check_name="転換メモ入力",
+            passed=True,
+            severity="medium",
+            message="比較対象となるテーマ変化はありません。",
+        ))
+        return items
+
+    searchable_text = markdown
+    if data is not None:
+        searchable_text += "\n" + json.dumps(data, ensure_ascii=False)
+
+    priority_rows = transition_rows[:3]
+    reflected_names = [
+        row["name"]
+        for row in priority_rows
+        if row["name"] and row["name"] in searchable_text
+    ]
+    items.append(ReportQualityItem(
+        category="テーマ転換反映",
+        check_name="主要テーマ名反映",
+        passed=bool(reflected_names),
+        severity="medium",
+        message=(
+            "テーマ転換メモの主要テーマ名がレポートに反映されています。"
+            if reflected_names
+            else "テーマ転換メモの主要テーマ名がレポートに見つかりません。"
+        ),
+        evidence=", ".join(reflected_names) if reflected_names else _transition_evidence(priority_rows),
+    ))
+
+    non_continuation_states = {
+        row["state"]
+        for row in transition_rows
+        if row["state"] and row["state"] != "継続"
+    }
+    shift_text = ""
+    if data is not None:
+        shift_text = str(data.get("theme_shift_analysis") or "")
+    else:
+        shift_text = markdown
+
+    state_terms = (
+        non_continuation_states
+        if non_continuation_states
+        else {"転換", "浮上", "後退", "関心移動"}
+    )
+    matched_terms = [term for term in state_terms if term and term in shift_text]
+    items.append(ReportQualityItem(
+        category="テーマ転換反映",
+        check_name="テーマ転換分析反映",
+        passed=bool(matched_terms),
+        severity="medium",
+        message=(
+            "テーマ転換分析に変化状態が反映されています。"
+            if matched_terms
+            else "テーマ転換分析に新規・強化・弱体化・消滅などの変化状態が見つかりません。"
+        ),
+        evidence=", ".join(matched_terms) if matched_terms else _transition_evidence(priority_rows),
+    ))
+
+    return items
+
+
+def _extract_transition_rows(theme_transition_context: str) -> list[dict[str, str]]:
+    rows = []
+    pattern = re.compile(r"^\s*-\s*\[(?P<state>[^\]]+)\]\s*(?P<name>[^:：]+)")
+    for line in theme_transition_context.splitlines():
+        match = pattern.search(line)
+        if not match:
+            continue
+        rows.append({
+            "state": match.group("state").strip(),
+            "name": match.group("name").strip(),
+        })
+    return rows
+
+
+def _transition_evidence(rows: list[dict[str, str]]) -> str:
+    return " / ".join(
+        f"[{row.get('state', '')}] {row.get('name', '')}"
+        for row in rows
+    )

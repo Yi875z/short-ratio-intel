@@ -20,6 +20,7 @@ if str(ROOT) not in sys.path:
 
 from config.settings import GEMINI_MODEL, MARKET_NEWS_AUTO_FETCH, TAVILY_API_KEY
 from src.ai_engine.gemini_client import GeminiReportGenerator
+from src.ai_engine.prompt_builder import build_theme_transition_context_for_prompt
 from src.ai_engine.report_quality import evaluate_report_quality
 from src.analyzer.anomaly_detector import AnomalyDetector
 from src.analyzer.flow_signal_analyzer import FlowSignalAnalyzer
@@ -525,7 +526,7 @@ def _render_ai_report_tab(
 
     stored_report = get_ai_report(selected_date)
     if stored_report:
-        _render_report_quality_panel(stored_report)
+        _render_report_quality_panel(stored_report, today_summary)
         st.markdown(stored_report.report_markdown)
         st.download_button(
             "Markdownをダウンロード",
@@ -538,10 +539,15 @@ def _render_ai_report_tab(
         st.info("この日付のAIレポートはまだ生成されていません。")
 
 
-def _render_report_quality_panel(stored_report) -> None:
+def _render_report_quality_panel(stored_report, today_summary: dict) -> None:
+    theme_transition_context = build_theme_transition_context_for_prompt(
+        target_date=stored_report.date,
+        today_summary=today_summary,
+    )
     quality = evaluate_report_quality(
         stored_report.report_markdown,
         getattr(stored_report, "report_json", "") or "",
+        theme_transition_context=theme_transition_context,
     )
     failed_rows = quality.to_rows(include_passed=False)
 

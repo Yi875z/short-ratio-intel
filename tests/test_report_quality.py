@@ -1,7 +1,9 @@
 import json
+from datetime import datetime
 
 from src.ai_engine.report_quality import (
     build_quality_feedback_prompt_block,
+    build_quality_history_row,
     build_quality_review_markdown,
     evaluate_report_quality,
 )
@@ -153,3 +155,33 @@ def test_quality_review_markdown_contains_summary_and_feedback():
     assert "## 未通過項目" in markdown
     assert "## 再生成用改善メモ" in markdown
     assert "JSON保存" in markdown
+
+
+def test_quality_history_row_summarizes_report_quality():
+    row = build_quality_history_row(
+        "2026-05-18",
+        _complete_markdown(),
+        _complete_json(),
+        model_used="gemini-test",
+        generated_at=datetime(2026, 5, 18, 17, 30),
+    )
+
+    assert row["date"] == "2026-05-18"
+    assert row["status"] == "OK"
+    assert row["score_pct"] == 100.0
+    assert row["failed_count"] == 0
+    assert row["passed_count"] == row["total_checks"]
+    assert row["model_used"] == "gemini-test"
+    assert row["generated_at"] == "2026-05-18 17:30"
+
+
+def test_quality_history_row_keeps_failed_counts():
+    row = build_quality_history_row(
+        "2026-05-18",
+        _complete_markdown(),
+        "",
+    )
+
+    assert row["status"] == "要確認"
+    assert row["failed_count"] >= 1
+    assert row["medium_count"] >= 1

@@ -23,6 +23,7 @@ from src.ai_engine.gemini_client import GeminiReportGenerator
 from src.ai_engine.prompt_builder import build_theme_transition_context_for_prompt
 from src.ai_engine.report_quality import (
     build_quality_feedback_prompt_block,
+    build_quality_history_row,
     build_quality_review_markdown,
     evaluate_report_quality,
 )
@@ -733,10 +734,85 @@ def _render_history_tab(selected_date: str) -> None:
     report_dates = get_ai_report_dates()
     st.write(f"AIレポート: {len(report_dates)}本")
     if report_dates:
+        _render_report_quality_history(report_dates)
+
         selected_report_date = st.selectbox("レポート履歴", report_dates)
         report = get_ai_report(selected_report_date)
         if report:
             st.markdown(report.report_markdown)
+
+
+def _render_report_quality_history(report_dates: list[str]) -> None:
+    st.subheader("AIレポート品質履歴")
+    quality_rows = _build_report_quality_history_rows(report_dates)
+    if not quality_rows:
+        st.info("品質履歴を作成できるAIレポートがありません。")
+        return
+
+    quality_df = pd.DataFrame(quality_rows)
+    latest = quality_df.iloc[0]
+    cols = st.columns(4)
+    cols[0].metric("直近判定", latest["status"])
+    cols[1].metric("直近スコア", f"{latest['score_pct']:.1f}%")
+    cols[2].metric("要修正日", int((quality_df["status"] == "要修正").sum()))
+    cols[3].metric("平均スコア", f"{quality_df['score_pct'].mean():.1f}%")
+
+    chart_df = quality_df.sort_values("date")
+    if len(chart_df) >= 2:
+        fig = px.line(
+            chart_df,
+            x="date",
+            y="score_pct",
+            markers=True,
+            title="AIレポート品質スコア推移",
+        )
+        fig.update_layout(height=300, margin=dict(l=10, r=10, t=50, b=10))
+        st.plotly_chart(fig, use_container_width=True)
+
+    display_df = quality_df.rename(columns={
+        "date": "日付",
+        "status": "判定",
+        "score_pct": "スコア",
+        "high_count": "重大",
+        "medium_count": "要確認",
+        "failed_count": "未通過",
+        "passed_count": "通過",
+        "total_checks": "全項目",
+        "model_used": "モデル",
+        "generated_at": "生成日時",
+    })
+    st.dataframe(display_df, hide_index=True, use_container_width=True)
+    st.download_button(
+        "品質履歴CSVをダウンロード",
+        data=display_df.to_csv(index=False).encode("utf-8-sig"),
+        file_name="ai_report_quality_history.csv",
+        mime="text/csv",
+        use_container_width=True,
+    )
+
+
+def _build_report_quality_history_rows(report_dates: list[str]) -> list[dict]:
+    calc = RatioCalculator()
+    rows = []
+    for report_date in report_dates:
+        report = get_ai_report(report_date)
+        if report is None:
+            continue
+
+        today_summary = calc.get_today_summary(report_date) or {}
+        theme_transition_context = build_theme_transition_context_for_prompt(
+            target_date=report_date,
+            today_summary=today_summary,
+        )
+        rows.append(build_quality_history_row(
+            report_date=report_date,
+            markdown=report.report_markdown,
+            report_json=getattr(report, "report_json", "") or "",
+            theme_transition_context=theme_transition_context,
+            model_used=getattr(report, "model_used", "") or "",
+            generated_at=getattr(report, "generated_at", None),
+        ))
+    return rows
 
 
 def _sector_frame(rows: list[dict]) -> pd.DataFrame:

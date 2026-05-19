@@ -152,6 +152,36 @@ def build_quality_review_markdown(
     return "\n".join(lines).strip() + "\n"
 
 
+def build_quality_history_row(
+    report_date: str,
+    markdown: str,
+    report_json: str | None = "",
+    theme_transition_context: str = "",
+    model_used: str = "",
+    generated_at: Any = None,
+) -> dict:
+    """保存済みAIレポート1本分の品質履歴行を作る。"""
+    quality = evaluate_report_quality(
+        markdown,
+        report_json,
+        theme_transition_context=theme_transition_context,
+    )
+    total_checks = len(quality.items)
+    failed_count = len(quality.failed_items)
+    return {
+        "date": report_date,
+        "status": quality.status_label,
+        "score_pct": quality.score_pct,
+        "high_count": quality.high_count,
+        "medium_count": quality.medium_count,
+        "failed_count": failed_count,
+        "passed_count": total_checks - failed_count,
+        "total_checks": total_checks,
+        "model_used": model_used or "",
+        "generated_at": _format_generated_at(generated_at),
+    }
+
+
 REQUIRED_MARKDOWN_SECTIONS = [
     ("現在の支配的マクロ背景", "現在の支配的マクロ背景"),
     ("東証全体サマリー", "東証全体サマリー"),
@@ -400,3 +430,11 @@ def _clip_single_line(text: str, max_chars: int) -> str:
     if len(one_line) <= max_chars:
         return one_line
     return one_line[:max_chars] + "..."
+
+
+def _format_generated_at(value: Any) -> str:
+    if value is None:
+        return ""
+    if hasattr(value, "strftime"):
+        return value.strftime("%Y-%m-%d %H:%M")
+    return str(value)

@@ -29,6 +29,9 @@ DATA_DIR: Path = BASE_DIR / os.getenv("DATA_DIR", "data")
 DB_PATH: Path = BASE_DIR / os.getenv("DB_PATH", "data/short_ratio.db")
 REPORTS_DIR: Path = BASE_DIR / os.getenv("REPORTS_DIR", "data/reports")
 KNOWLEDGE_DIR: Path = BASE_DIR / "src" / "knowledge" / "files"
+EXTERNAL_KNOWLEDGE_DIR: Path = Path(
+    os.getenv("EXTERNAL_KNOWLEDGE_DIR", r"C:\CarSol\knowledgefile")
+)
 
 # ---- ログ ----
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
@@ -37,6 +40,10 @@ LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 ANOMALY_DOD_THRESHOLD: float = 3.0    # 前日比±3pt超でアラート
 ANOMALY_ZSCORE_THRESHOLD: float = 2.0  # Zスコア±2超でアラート
 HISTORY_DAYS_FOR_ZSCORE: int = 30     # Zスコア計算に使う過去日数
+
+# ---- 市場テーマ判定 ----
+MARKET_THEME_MAX_ITEMS: int = int(os.getenv("MARKET_THEME_MAX_ITEMS", "3"))
+MARKET_THEME_MIN_SCORE: float = float(os.getenv("MARKET_THEME_MIN_SCORE", "2.0"))
 
 # ---- 現在のマクロ背景（Step 0プロトコル） ----
 # ⚠️ 重要: 相場環境が変化したら必ずここを更新すること

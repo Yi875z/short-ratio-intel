@@ -90,3 +90,28 @@ class AiReport(Base):
 
     def __repr__(self) -> str:
         return f"<AiReport date={self.date}>"
+
+
+class MarketThemeSnapshot(Base):
+    """日次の市場テーマ判定スナップショット"""
+
+    __tablename__ = "market_theme_snapshots"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    date = Column(String(10), nullable=False, index=True)
+    theme_key = Column(String(100), nullable=False)
+    theme_name = Column(String(200), nullable=False)
+    score = Column(Float, nullable=False, default=0)
+    status = Column(String(50), nullable=False, default="")
+    confidence = Column(String(50), nullable=False, default="")
+    evidence_json = Column(String, nullable=False, default="[]")
+    related_sectors_json = Column(String, nullable=False, default="[]")
+    unverified_data_json = Column(String, nullable=False, default="[]")
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("date", "theme_key", name="uq_date_theme_key"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<MarketThemeSnapshot date={self.date} theme={self.theme_name}>"

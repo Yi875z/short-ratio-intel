@@ -1,6 +1,7 @@
 """
 SQLite データベース接続・CRUD操作
 """
+import json
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -11,7 +12,13 @@ from sqlalchemy import create_engine, select, desc, delete
 from sqlalchemy.orm import Session
 
 from config.settings import DB_PATH, REPORTS_DIR
-from src.storage.models import Base, ShortRatioDaily, MarketShortRatioDaily, AiReport
+from src.storage.models import (
+    AiReport,
+    Base,
+    MarketShortRatioDaily,
+    MarketThemeSnapshot,
+    ShortRatioDaily,
+)
 
 
 # ------------------------------------------------------------------
@@ -376,3 +383,82 @@ def get_ai_report_dates() -> list[str]:
             select(AiReport.date).order_by(desc(AiReport.date))
         ).scalars().all()
     return list(rows)
+
+
+# ------------------------------------------------------------------
+# 市場テーマ判定
+# ------------------------------------------------------------------
+
+def save_market_theme_snapshots(date: str, themes: list[dict]) -> int:
+    """市場テーマ判定を日付単位でUPSERTする。"""
+    if not themes:
+        return 0
+
+    engine = get_db_engine()
+    saved = 0
+    with Session(engine) as session:
+        for theme in themes:
+            theme_key = theme.get("key") or theme.get("theme_key") or theme.get("name")
+            existing = session.execute(
+                select(MarketThemeSnapshot).where(
+                    MarketThemeSnapshot.date == date,
+                    MarketThemeSnapshot.theme_key == theme_key,
+                )
+            ).scalar_one_or_none()
+
+            values = {
+                "theme_name": theme.get("name", ""),
+                "score": float(theme.get("score", 0) or 0),
+                "status": theme.get("status", ""),
+                "confidence": theme.get("confidence", ""),
+                "evidence_json": json.dumps(
+                    theme.get("evidence", []), ensure_ascii=False
+                ),
+                "related_sectors_json": json.dumps(
+                    theme.get("related_sectors", []), ensure_ascii=False
+                ),
+                "unverified_data_json": json.dumps(
+                    theme.get("unverified_data", []), ensure_ascii=False
+                ),
+            }
+
+            if existing:
+                for key, value in values.items():
+                    setattr(existing, key, value)
+            else:
+                session.add(MarketThemeSnapshot(
+                    date=date,
+                    theme_key=theme_key,
+                    **values,
+                ))
+            saved += 1
+        session.commit()
+
+    logger.info(f"市場テーマ判定 {saved}件を保存しました: {date}")
+    return saved
+
+
+def get_market_theme_snapshots(date: str) -> list[dict]:
+    """指定日の市場テーマ判定を取得する。"""
+    engine = get_db_engine()
+    with Session(engine) as session:
+        rows = session.execute(
+            select(MarketThemeSnapshot)
+            .where(MarketThemeSnapshot.date == date)
+            .order_by(desc(MarketThemeSnapshot.score))
+        ).scalars().all()
+
+    result = []
+    for row in rows:
+        result.append({
+            "date": row.date,
+            "key": row.theme_key,
+            "name": row.theme_name,
+            "score": row.score,
+            "status": row.status,
+            "confidence": row.confidence,
+            "evidence": json.loads(row.evidence_json or "[]"),
+            "related_sectors": json.loads(row.related_sectors_json or "[]"),
+            "unverified_data": json.loads(row.unverified_data_json or "[]"),
+        })
+    return result

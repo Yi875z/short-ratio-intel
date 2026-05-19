@@ -12,6 +12,7 @@ from loguru import logger
 from config.settings import GEMINI_API_KEY, GEMINI_MODEL
 from src.ai_engine.output_schema import ReadingReport
 from src.ai_engine.prompt_builder import build_system_prompt, build_user_prompt
+from src.ai_engine.report_lint import lint_report_markdown
 
 
 class GeminiReportGenerator:
@@ -68,6 +69,12 @@ class GeminiReportGenerator:
 
                 # Markdown形式にレンダリング
                 markdown = self._render_markdown(report_obj, target_date)
+                lint_issues = lint_report_markdown(markdown, input_text=user_prompt)
+                if lint_issues:
+                    logger.warning(
+                        "AIレポートlint警告: "
+                        + " / ".join(issue.message for issue in lint_issues[:5])
+                    )
 
                 return report_obj, markdown
 
@@ -147,6 +154,16 @@ class GeminiReportGenerator:
                     "主体別売買動向、信用残、個別銘柄のニュース。",
                 ],
             )
+            data.setdefault("dominant_market_themes", [])
+            data.setdefault(
+                "theme_shift_analysis",
+                "市場テーマ転換の専用分析は未生成です。",
+            )
+            data.setdefault(
+                "theme_sector_alignment",
+                "市場テーマと業種別空売り比率の整合性分析は未生成です。",
+            )
+            data.setdefault("unverified_market_data", [])
             return ReadingReport(**data)
         except json.JSONDecodeError as e:
             logger.error(f"JSONパースエラー: {e}\n{text[:500]}")
@@ -202,6 +219,40 @@ class GeminiReportGenerator:
             f"## 📅 週次トレンド解析",
             f"{report.weekly_trend_analysis}",
             "",
+            f"## 🧭 市場テーマ判定",
+        ]
+
+        if report.dominant_market_themes:
+            for theme in report.dominant_market_themes:
+                lines += [
+                    f"### {theme.theme_name}",
+                    f"- **重要度**: {theme.importance}",
+                    f"- **状態**: {theme.status}",
+                    f"- **影響経路**: {', '.join(theme.impact_channels)}",
+                    f"- **関連業種**: {', '.join(theme.related_sectors)}",
+                    f"- **空売り比率との整合性**: {theme.short_ratio_alignment}",
+                    f"- **根拠**: {' / '.join(theme.evidence)}",
+                    f"- **注記**: {theme.caveat}",
+                    "",
+                ]
+        else:
+            lines += ["市場テーマ判定は未生成です。", ""]
+
+        lines += [
+            "### テーマ転換シグナル",
+            report.theme_shift_analysis,
+            "",
+            "### テーマと業種別空売りの整合性",
+            report.theme_sector_alignment,
+            "",
+        ]
+        if report.unverified_market_data:
+            lines += ["### 未確認データ"]
+            for item in report.unverified_market_data:
+                lines.append(f"- {item}")
+            lines.append("")
+
+        lines += [
             f"## 🚨 シグナル履歴分析",
             f"{report.signal_history_analysis}",
             "",

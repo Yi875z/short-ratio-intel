@@ -23,6 +23,17 @@ class StrategicSuggestion(BaseModel):
     risk_warning: str
 
 
+class DominantMarketTheme(BaseModel):
+    theme_name: str
+    importance: str          # "high" | "medium" | "low"
+    status: str              # "主テーマ候補" | "浮上中" | "監視候補" | "要調査"
+    evidence: list[str]
+    impact_channels: list[str]
+    related_sectors: list[str]
+    short_ratio_alignment: str
+    caveat: str              # 未確認データ・反証条件・過剰断定回避の注記
+
+
 class ReadingReport(BaseModel):
     """AIが生成する完全解読レポートの構造"""
 
@@ -50,6 +61,26 @@ class ReadingReport(BaseModel):
 
     weekly_trend_analysis: str = Field(
         description="直近1週間のトレンド解釈"
+    )
+
+    dominant_market_themes: list[DominantMarketTheme] = Field(
+        default_factory=list,
+        description="市場が現在見ている主要テーマ候補。根拠、影響経路、関連業種、空売り比率との整合性を含める"
+    )
+
+    theme_shift_analysis: str = Field(
+        default="市場テーマ転換の専用分析は未生成です。",
+        description="前提テーマが変わりつつあるかを、根拠あり/推測/未確認を分けて条件付きで記述"
+    )
+
+    theme_sector_alignment: str = Field(
+        default="市場テーマと業種別空売り比率の整合性分析は未生成です。",
+        description="主要テーマと業種別空売り比率・価格規制内訳が整合するか、整合しないかを記述"
+    )
+
+    unverified_market_data: list[str] = Field(
+        default_factory=list,
+        description="未取得・未確認の市場データ。VIX、WTI、SOX、GEX、米金利、ドル円等を事実として断定しないために列挙"
     )
 
     signal_history_analysis: str = Field(

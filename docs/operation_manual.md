@@ -1,16 +1,17 @@
 # 空売り比率インテリジェンス 運用マニュアル
 
-最終更新: 2026-05-08
+最終更新: 2026-05-19
 
 ---
 
 ## システム概要
 
-JPXの空売り比率データ（J-Quants API）と空売り残高データ（JPX PDF）を取得・分析し、Gemini AIによるレポートを生成するStreamlitアプリ。
+JPXの空売り集計データと業種別空売り比率を取得・分析し、現在の市場テーマを踏まえたGemini AIレポートを生成するStreamlitアプリ。
 
 - **URL**: http://localhost:8501
-- **データソース**: J-Quants API、JPX空売り残高PDF
+- **データソース**: JPX公式空売り集計PDF、stock-marketdata.com（フォールバック）
 - **AI**: Gemini API（AIレポートタブ）
+- **任意ニュース取得**: Tavily API（市場テーマタブ / AIレポート生成時に明示ON）
 
 ---
 
@@ -43,9 +44,26 @@ python -m streamlit run app\streamlit_app.py
 
 1. `アプリ起動.bat` をダブルクリックしてアプリを起動する
 2. ブラウザが開いたら「データ取得」ボタンでデータを更新する
-3. 各タブ（概要 / 業種 / JPX内訳 / 履歴 / AIレポート）で分析を確認する
-4. AIレポートタブでGeminiによる相場考察を生成する
-5. 確認が終わったら黒いウィンドウを閉じてアプリを停止する
+3. 各タブ（概要 / 業種 / JPX内訳 / 市場テーマ / AIレポート / 履歴）で分析を確認する
+4. 市場テーマタブで手動メモや任意のニュース取得を使い、主要テーマ候補を保存する
+5. AIレポートタブでGeminiによる相場考察を生成し、品質チェック欄を確認する
+6. 確認が終わったら黒いウィンドウを閉じてアプリを停止する
+
+---
+
+## AIレポート品質チェック
+
+AIレポートタブでは、保存済みレポートの上部に「AIレポート品質チェック」が表示される。
+
+主な確認内容:
+
+- 必須セクション（市場テーマ、JPX内訳、シグナル履歴、投資判断ガードレール等）が含まれているか
+- 「売買推奨ではない」「日次フロー」などの安全表現が入っているか
+- 「確信的」「必ず上がる」「反発確率」などの過剰断定表現がないか
+- VIX、WTI、SOX、GEX、米金利、ドル円などの未確認データを事実として断定していないか
+- 構造化JSONに市場テーマ、確認条件、誤判定リスク、追加確認データが保存されているか
+
+判定が「要修正」または「要確認」の場合は、表示された行の `message` と `evidence` を確認し、必要に応じて市場メモを補足してAIレポートを再生成する。
 
 ---
 
@@ -55,9 +73,9 @@ python -m streamlit run app\streamlit_app.py
 C:\CarSol\short-ratio-intel\
 ├── アプリ起動.bat                      ← ワンクリック起動ファイル
 ├── app\
-│   ├── streamlit_app.py               ← アプリ本体（現在はbytecodeローダー）
+│   ├── streamlit_app.py               ← アプリ本体（通常のPythonソース）
 │   └── __pycache__\
-│       └── streamlit_app_original.cpython-311.pyc  ← 【重要】絶対に削除しないこと
+│       └── streamlit_app_original.cpython-311.pyc  ← 旧復旧用バックアップ
 ├── src\                               ← データ取得・分析・AIエンジン
 ├── config\                            ← 設定ファイル
 ├── data\                              ← SQLiteデータベース（Gitで除外）
@@ -66,15 +84,14 @@ C:\CarSol\short-ratio-intel\
 
 ---
 
-## ⚠️ 重要な注意事項
+## 重要な注意事項
 
 ### `streamlit_app_original.cpython-311.pyc` について
 
-現在の `app\streamlit_app.py` はスタブ（21行の起動ローダー）であり、実際のアプリロジックはすべて `app\__pycache__\streamlit_app_original.cpython-311.pyc`（コンパイル済みbytecode）に格納されている。
+現在の `app\streamlit_app.py` は通常のPythonソースとして保守できる状態に復旧済み。
+`app\__pycache__\streamlit_app_original.cpython-311.pyc` は旧復旧用バックアップとして残しているが、通常起動では使用しない。
 
-この `.pyc` ファイルを**削除するとアプリが起動しなくなる**。絶対に削除・移動しないこと。
-
-背景: 2026-05-07、PowerShellの文字コード変換バグにより `streamlit_app.py` のソースコードが破損した。復旧は2026-05-08のbytecodeを利用した代替起動方式で完了している。
+背景: 2026-05-07、PowerShellの文字コード変換バグにより `streamlit_app.py` のソースコードが破損した。2026-05-19に通常ソースへ復元済み。
 
 ### `.env` ファイルについて
 
@@ -97,11 +114,12 @@ taskkill /PID 12345 /F
 
 ### アプリは起動するが「データなし」と表示される
 
-データ取得ボタンを押してJ-QuantsからデータをダウンロードするかDBにデータが存在するか確認する。
+データ取得ボタンを押してJPX公式PDFまたはstock-marketdata.comからデータを取得するか、DBにデータが存在するか確認する。
 
-### AIレポートが生成されない（TypeError: boolean value of NA is ambiguous）
+### AIレポートが生成されない
 
-このエラーは現在のbytecodeローダー方式で修正済み。発生した場合は `アプリ起動.bat` で再起動する。
+`.env` に `GEMINI_API_KEY` が設定されているか確認する。Tavilyニュース取得を使う場合だけ `TAVILY_API_KEY` も必要。
+生成後に品質チェックが「要確認」になる場合は、市場メモやニュース材料を補足して再生成する。
 
 ---
 

@@ -20,6 +20,7 @@ if str(ROOT) not in sys.path:
 
 from config.settings import GEMINI_MODEL, MARKET_NEWS_AUTO_FETCH, TAVILY_API_KEY
 from src.ai_engine.gemini_client import GeminiReportGenerator
+from src.ai_engine.report_quality import evaluate_report_quality
 from src.analyzer.anomaly_detector import AnomalyDetector
 from src.analyzer.flow_signal_analyzer import FlowSignalAnalyzer
 from src.analyzer.ratio_calculator import RatioCalculator
@@ -446,6 +447,7 @@ def _render_ai_report_tab(
 
     stored_report = get_ai_report(selected_date)
     if stored_report:
+        _render_report_quality_panel(stored_report)
         st.markdown(stored_report.report_markdown)
         st.download_button(
             "Markdownをダウンロード",
@@ -456,6 +458,38 @@ def _render_ai_report_tab(
         )
     else:
         st.info("この日付のAIレポートはまだ生成されていません。")
+
+
+def _render_report_quality_panel(stored_report) -> None:
+    quality = evaluate_report_quality(
+        stored_report.report_markdown,
+        getattr(stored_report, "report_json", "") or "",
+    )
+    failed_rows = quality.to_rows(include_passed=False)
+
+    with st.expander("AIレポート品質チェック", expanded=True):
+        cols = st.columns(4)
+        cols[0].metric("判定", quality.status_label)
+        cols[1].metric("スコア", f"{quality.score_pct:.1f}%")
+        cols[2].metric("重大", quality.high_count)
+        cols[3].metric("要確認", len(quality.failed_items))
+
+        if failed_rows:
+            st.dataframe(pd.DataFrame(failed_rows), hide_index=True, use_container_width=True)
+        else:
+            st.success("品質チェックで重大な問題は検出されませんでした。")
+
+        show_passed = st.checkbox(
+            "通過項目も表示",
+            value=False,
+            key=f"quality_show_passed_{stored_report.date}",
+        )
+        if show_passed:
+            st.dataframe(
+                pd.DataFrame(quality.to_rows(include_passed=True)),
+                hide_index=True,
+                use_container_width=True,
+            )
 
 
 def _render_history_tab(selected_date: str) -> None:

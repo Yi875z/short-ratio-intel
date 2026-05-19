@@ -45,6 +45,31 @@ CAUTION_CONTEXT_MARKERS = [
     "取得",
     "不確か",
     "可能性",
+    "場合",
+    "見るべき",
+    "推移",
+    "相関",
+    "維持",
+    "条件",
+    "リスク注意",
+]
+
+CERTAINTY_CAUTION_MARKERS = CAUTION_CONTEXT_MARKERS + [
+    "断定しない",
+    "断定できない",
+    "断定は避け",
+    "禁止",
+    "ではない",
+    "とは限らない",
+]
+
+CHECKLIST_SECTION_MARKERS = [
+    "追加で見るべきデータ",
+    "次の監視ポイント",
+    "翌営業日の確認条件",
+    "監視ポイント",
+    "確認条件",
+    "未確認データ",
 ]
 
 
@@ -54,14 +79,19 @@ def lint_report_markdown(
 ) -> list[ReportLintIssue]:
     """レポート本文に危険な表現がないか確認する。"""
     issues: list[ReportLintIssue] = []
+    current_section = ""
 
     for line in markdown.splitlines():
         stripped = line.strip()
         if not stripped:
             continue
+        if stripped.startswith("#"):
+            current_section = stripped
 
         for pattern in FORBIDDEN_CERTAINTY_PATTERNS:
             if pattern in stripped:
+                if any(marker in stripped for marker in CERTAINTY_CAUTION_MARKERS):
+                    continue
                 issues.append(
                     ReportLintIssue(
                         severity="high",
@@ -75,6 +105,8 @@ def lint_report_markdown(
             if term not in stripped:
                 continue
             if term in input_text:
+                continue
+            if any(marker in current_section for marker in CHECKLIST_SECTION_MARKERS):
                 continue
             if any(marker in stripped for marker in CAUTION_CONTEXT_MARKERS):
                 continue

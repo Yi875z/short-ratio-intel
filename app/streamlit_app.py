@@ -505,15 +505,20 @@ def _render_ai_report_tab(
         value=False,
         key=f"ai_auto_news_{selected_date}",
     )
+    stored_report = get_ai_report(selected_date)
+    quality_feedback_preview = _build_quality_feedback_for_regeneration(
+        stored_report,
+        selected_date,
+        today_summary,
+    )
+    use_quality_feedback = _render_quality_feedback_preview(
+        selected_date,
+        quality_feedback_preview,
+    )
 
     if st.button("Gemini AIレポートを生成", type="primary", use_container_width=True):
         with st.spinner("Geminiでレポート生成中..."):
-            previous_report = get_ai_report(selected_date)
-            quality_feedback = _build_quality_feedback_for_regeneration(
-                previous_report,
-                selected_date,
-                today_summary,
-            )
+            quality_feedback = quality_feedback_preview if use_quality_feedback else ""
             generator = GeminiReportGenerator()
             report_obj, markdown = generator.generate_report(
                 selected_date,
@@ -534,7 +539,6 @@ def _render_ai_report_tab(
         st.success("AIレポートを保存しました。")
         st.rerun()
 
-    stored_report = get_ai_report(selected_date)
     if stored_report:
         _render_report_quality_panel(stored_report, today_summary)
         st.markdown(stored_report.report_markdown)
@@ -547,6 +551,20 @@ def _render_ai_report_tab(
         )
     else:
         st.info("この日付のAIレポートはまだ生成されていません。")
+
+
+def _render_quality_feedback_preview(selected_date: str, quality_feedback: str) -> bool:
+    if not quality_feedback:
+        return False
+
+    with st.expander("再生成時にGeminiへ渡す改善メモ", expanded=False):
+        st.caption("前回保存レポートの品質チェック結果から自動生成した改善指示です。")
+        st.code(quality_feedback, language="markdown")
+        return st.checkbox(
+            "この改善メモを再生成プロンプトに反映する",
+            value=True,
+            key=f"use_quality_feedback_{selected_date}",
+        )
 
 
 def _build_quality_feedback_for_regeneration(

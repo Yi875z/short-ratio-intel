@@ -239,6 +239,28 @@ def build_quality_comparison(
     }
 
 
+def build_quality_comparison_markdown(comparison: dict) -> str:
+    """再生成前後の品質比較をMarkdownレビューにする。"""
+    date_value = comparison.get("date", "")
+    title_date = f" {date_value}" if date_value else ""
+    lines = [
+        f"# AIレポート再生成 品質比較{title_date}",
+        "",
+        "## サマリー",
+        f"- 結果: {comparison.get('result', '')}",
+        f"- 再生成前判定: {comparison.get('before_status', '') or 'なし'}",
+        f"- 再生成後判定: {comparison.get('after_status', '')}",
+        f"- スコア: {_format_optional_number(comparison.get('before_score_pct'), '%')} → {_format_optional_number(comparison.get('after_score_pct'), '%')} ({_format_delta(comparison.get('score_delta'), 'pt')})",
+        f"- 未通過項目: {_format_optional_number(comparison.get('before_failed_count'), '件')} → {_format_optional_number(comparison.get('after_failed_count'), '件')} ({_format_delta(comparison.get('failed_delta'), '件')})",
+        f"- 重大項目: {_format_optional_number(comparison.get('before_high_count'), '件')} → {_format_optional_number(comparison.get('after_high_count'), '件')} ({_format_delta(comparison.get('high_delta'), '件')})",
+        "",
+        "## メモ",
+        "- この比較はAIレポート再生成直後の品質チェック結果を記録したものです。",
+        "- 未通過項目が減っていても、市場データ・ニュース文脈・投資判断ガードレールの人間確認は継続してください。",
+    ]
+    return "\n".join(lines).strip() + "\n"
+
+
 REQUIRED_MARKDOWN_SECTIONS = [
     ("現在の支配的マクロ背景", "現在の支配的マクロ背景"),
     ("東証全体サマリー", "東証全体サマリー"),
@@ -507,3 +529,19 @@ def _int_or_none(row: dict | None, key: str) -> int | None:
     if row is None or row.get(key) is None:
         return None
     return int(row.get(key) or 0)
+
+
+def _format_optional_number(value: Any, suffix: str = "") -> str:
+    if value is None:
+        return "なし"
+    if isinstance(value, float):
+        return f"{value:.1f}{suffix}"
+    return f"{value}{suffix}"
+
+
+def _format_delta(value: Any, suffix: str = "") -> str:
+    if value is None:
+        return "差分なし"
+    if isinstance(value, float):
+        return f"{value:+.1f}{suffix}"
+    return f"{int(value):+d}{suffix}"

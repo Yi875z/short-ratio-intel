@@ -23,6 +23,7 @@ from src.ai_engine.gemini_client import GeminiReportGenerator
 from src.ai_engine.prompt_builder import build_theme_transition_context_for_prompt
 from src.ai_engine.report_quality import (
     build_quality_comparison,
+    build_quality_comparison_markdown,
     build_quality_feedback_prompt_block,
     build_quality_history_row,
     build_quality_review_markdown,
@@ -46,12 +47,14 @@ from src.storage.db import (
     delete_short_ratio_records_for_dates,
     get_ai_report,
     get_ai_report_dates,
+    load_ai_report_quality_comparison,
     get_market_news_snapshots,
     get_market_short_ratio_df,
     get_market_theme_snapshot_dates,
     get_market_theme_snapshots,
     get_saved_short_ratio_dates,
     save_ai_report,
+    save_ai_report_quality_comparison,
     save_market_news_snapshots,
     save_market_theme_snapshots,
     upsert_market_short_ratio_records,
@@ -625,15 +628,19 @@ def _render_ai_report_tab(
                 today_summary=today_summary,
                 model_used=GEMINI_MODEL,
             )
-            st.session_state[f"quality_regen_comparison_{selected_date}"] = (
-                build_quality_comparison(before_quality_row, after_quality_row)
-            )
+            quality_comparison = build_quality_comparison(before_quality_row, after_quality_row)
+            quality_comparison_markdown = build_quality_comparison_markdown(quality_comparison)
             save_ai_report(
                 selected_date,
                 report_obj.current_macro_context,
                 markdown,
                 report_json=report_json,
                 model_used=GEMINI_MODEL,
+            )
+            save_ai_report_quality_comparison(selected_date, quality_comparison_markdown)
+            st.session_state[f"quality_regen_comparison_{selected_date}"] = quality_comparison
+            st.session_state[f"quality_regen_comparison_md_{selected_date}"] = (
+                quality_comparison_markdown
             )
         st.success("AIレポートを保存しました。")
         st.rerun()
@@ -751,7 +758,21 @@ def _render_report_quality_panel(stored_report, today_summary: dict) -> None:
 
 def _render_quality_regeneration_comparison(selected_date: str) -> None:
     comparison = st.session_state.get(f"quality_regen_comparison_{selected_date}")
+    saved_markdown = (
+        st.session_state.get(f"quality_regen_comparison_md_{selected_date}")
+        or load_ai_report_quality_comparison(selected_date)
+    )
     if not comparison:
+        if saved_markdown:
+            with st.expander("保存済み品質比較レビュー", expanded=False):
+                st.markdown(saved_markdown)
+                st.download_button(
+                    "品質比較レビューMarkdownをダウンロード",
+                    data=saved_markdown.encode("utf-8"),
+                    file_name=f"ai_report_quality_comparison_{selected_date}.md",
+                    mime="text/markdown",
+                    use_container_width=True,
+                )
         return
 
     with st.expander("前回再生成の品質比較", expanded=True):
@@ -795,6 +816,14 @@ def _render_quality_regeneration_comparison(selected_date: str) -> None:
             mime="text/csv",
             use_container_width=True,
         )
+        if saved_markdown:
+            st.download_button(
+                "品質比較レビューMarkdownをダウンロード",
+                data=saved_markdown.encode("utf-8"),
+                file_name=f"ai_report_quality_comparison_{selected_date}.md",
+                mime="text/markdown",
+                use_container_width=True,
+            )
 
 
 def _render_history_tab(selected_date: str) -> None:

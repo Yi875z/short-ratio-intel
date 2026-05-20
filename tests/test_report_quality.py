@@ -3,6 +3,7 @@ from datetime import datetime
 
 from src.ai_engine.report_quality import (
     build_quality_comparison,
+    build_quality_comparison_markdown,
     build_quality_feedback_prompt_block,
     build_quality_history_row,
     build_quality_review_markdown,
@@ -226,3 +227,29 @@ def test_quality_comparison_handles_new_report():
     assert comparison["result"] == "新規生成"
     assert comparison["before_score_pct"] is None
     assert comparison["score_delta"] is None
+
+
+def test_quality_comparison_markdown_contains_summary():
+    comparison = build_quality_comparison(
+        {
+            "date": "2026-05-18",
+            "status": "要修正",
+            "score_pct": 65.0,
+            "failed_count": 7,
+            "high_count": 3,
+        },
+        {
+            "date": "2026-05-18",
+            "status": "要確認",
+            "score_pct": 85.0,
+            "failed_count": 2,
+            "high_count": 0,
+        },
+    )
+
+    markdown = build_quality_comparison_markdown(comparison)
+
+    assert "# AIレポート再生成 品質比較 2026-05-18" in markdown
+    assert "- 結果: 改善" in markdown
+    assert "65.0% → 85.0% (+20.0pt)" in markdown
+    assert "7件 → 2件 (-5件)" in markdown

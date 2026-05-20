@@ -367,6 +367,23 @@ def save_ai_report(date: str, macro_context: str,
     logger.info(f"AIレポート保存完了: {date}")
 
 
+def save_ai_report_quality_comparison(date: str, markdown: str) -> Path:
+    """AIレポート再生成の品質比較レビューをMarkdownで保存する。"""
+    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    report_path = REPORTS_DIR / f"ai_report_quality_comparison_{date}.md"
+    report_path.write_text(markdown, encoding="utf-8")
+    logger.info(f"AIレポート品質比較レビュー保存完了: {date}")
+    return report_path
+
+
+def load_ai_report_quality_comparison(date: str) -> str:
+    """保存済みAIレポート品質比較レビューを読み込む。"""
+    report_path = REPORTS_DIR / f"ai_report_quality_comparison_{date}.md"
+    if not report_path.exists():
+        return ""
+    return report_path.read_text(encoding="utf-8")
+
+
 def get_ai_report(date: str) -> Optional[AiReport]:
     """指定日のAIレポートを取得"""
     engine = get_db_engine()

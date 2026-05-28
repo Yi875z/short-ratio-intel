@@ -1,5 +1,5 @@
 """
-Gemini 3 Flash Preview API クライアント
+Gemini API クライアント（モデルは config.settings.GEMINI_MODEL で指定）
 レポート生成・JSON構造化出力
 """
 import json

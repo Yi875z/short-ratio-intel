@@ -22,8 +22,9 @@ JQUANTS_API_KEY: str = os.getenv("JQUANTS_API_KEY", "")
 JQUANTS_BASE_URL: str = "https://api.jquants.com"
 
 # ---- Gemini ----
+# モデルは .env の GEMINI_MODEL で切替可能（未設定時は gemini-3.5-flash）
 GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL: str = "gemini-3-flash-preview"
+GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
 
 # ---- Slack ----
 SLACK_WEBHOOK_URL: str = os.getenv("SLACK_WEBHOOK_URL", "")

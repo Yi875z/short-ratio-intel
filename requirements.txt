@@ -11,6 +11,10 @@ numpy==1.26.4
 
 # Database
 sqlalchemy==2.0.27
+psycopg2-binary==2.9.9  # Supabase(PostgreSQL) 接続用。未設定時は SQLite なので開発では未使用
+
+# Auth (Streamlit Cloud 公開URLのログイン保護)
+bcrypt==4.1.2
 
 # AI
 google-generativeai==0.8.3

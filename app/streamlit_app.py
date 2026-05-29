@@ -65,12 +65,46 @@ from src.storage.db import (
 AUTO_FETCH_DAYS = 5
 
 
+def _require_login() -> None:
+    """Streamlit Cloud の公開URLを bcrypt でログイン保護する。
+
+    secrets.toml に [auth] セクションが無い場合（ローカル開発など）は
+    認証なしでそのまま通す。Cloud では [auth] を設定して保護を有効化する。
+    """
+    try:
+        has_auth = "auth" in st.secrets
+    except Exception:  # secrets ファイル自体が無い環境
+        has_auth = False
+    if not has_auth or st.session_state.get("authenticated"):
+        return
+
+    cfg = st.secrets["auth"]
+    st.title("空売り比率インテリジェンス")
+    with st.form("login"):
+        st.subheader("ログイン")
+        username = st.text_input("ユーザー名")
+        password = st.text_input("パスワード", type="password")
+        if st.form_submit_button("ログイン"):
+            import bcrypt
+
+            ok = username == cfg.get("username") and bcrypt.checkpw(
+                password.encode(), str(cfg.get("password_hash", "")).encode()
+            )
+            if ok:
+                st.session_state["authenticated"] = True
+                st.rerun()
+            else:
+                st.error("ユーザー名またはパスワードが違います")
+    st.stop()
+
+
 def main() -> None:
     st.set_page_config(
         page_title="空売り比率インテリジェンス",
         layout="wide",
     )
     _apply_style()
+    _require_login()
 
     st.title("空売り比率インテリジェンス")
     st.caption("JPX日次空売りフロー、業種別内訳、市場テーマ、Gemini AIレポートを一画面で確認します。")

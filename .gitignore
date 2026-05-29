@@ -1,6 +1,9 @@
 # 環境変数（最重要：絶対にコミットしない）
 .env
 
+# Streamlit Secrets（鍵・接続文字列・認証情報。.example のみ追跡）
+.streamlit/secrets.toml
+
 # 仮想環境
 .venv/
 venv/

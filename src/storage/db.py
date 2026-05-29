@@ -1,7 +1,12 @@
 """
-SQLite データベース接続・CRUD操作
+データベース接続・CRUD操作
+
+接続先は環境変数 DATABASE_URL で切り替わる:
+- DATABASE_URL 未設定 → ローカル SQLite (従来どおり / 開発用)
+- DATABASE_URL 設定   → Supabase(PostgreSQL) (GitHub Actions / Streamlit Cloud 用)
 """
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -27,10 +32,21 @@ from src.storage.models import (
 # ------------------------------------------------------------------
 
 def get_engine():
-    """SQLAlchemy エンジンを返す（DB自動作成）"""
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    db_url = f"sqlite:///{DB_PATH}"
-    engine = create_engine(db_url, echo=False)
+    """SQLAlchemy エンジンを返す（DB自動作成）。
+
+    環境変数 DATABASE_URL があれば Supabase(PostgreSQL) に、
+    なければ従来どおりローカル SQLite に接続する。
+    """
+    database_url = os.environ.get("DATABASE_URL") or ""
+    if database_url:
+        # SQLAlchemy は postgresql:// を要求する。古い postgres:// 形式を正規化
+        if database_url.startswith("postgres://"):
+            database_url = database_url.replace("postgres://", "postgresql://", 1)
+        # pool_pre_ping: Supabase pooler の切断済みコネクションを自動検知して張り直す
+        engine = create_engine(database_url, echo=False, pool_pre_ping=True)
+    else:
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        engine = create_engine(f"sqlite:///{DB_PATH}", echo=False)
     Base.metadata.create_all(engine)
     return engine
 
@@ -42,7 +58,8 @@ def get_db_engine():
     global _engine
     if _engine is None:
         _engine = get_engine()
-        logger.info(f"DB接続: {DB_PATH}")
+        backend = "PostgreSQL(Supabase)" if os.environ.get("DATABASE_URL") else f"SQLite({DB_PATH})"
+        logger.info(f"DB接続: {backend}")
     return _engine
 
 

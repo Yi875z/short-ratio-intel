@@ -1,0 +1,89 @@
+name: 空売り比率 定時取得・AIレポート生成
+
+# トリガー:
+#   1. 平日(月〜金) 19:00 JST = 10:00 UTC の自動実行
+#      （空売り比率は日次公表。営業日夕方に直近営業日分をまとめて取得する）
+#   2. Actions タブからの手動実行（workflow_dispatch / スマホからも可）
+on:
+  schedule:
+    - cron: '0 10 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      date:
+        description: '対象日 YYYY-MM-DD（空欄なら直近営業日をまとめて取得）'
+        required: false
+        type: string
+      mode:
+        description: '実行モード'
+        required: false
+        type: choice
+        default: 'full'
+        options:
+          - full         # 取得 + 市場テーマ判定 + AIレポート生成（通常）
+          - fetch-only   # データ取得のみ（テーマ/レポートをスキップ）
+          - no-news      # Tavilyニュースを使わず内部データのみで作成
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      TZ: Asia/Tokyo
+      # --- 機密値はすべて GitHub Secrets から ---
+      # Supabase(PostgreSQL) 接続文字列。これが設定されている限り SQLite ではなく Supabase に書く
+      DATABASE_URL:      ${{ secrets.DATABASE_URL }}
+      GEMINI_API_KEY:    ${{ secrets.GEMINI_API_KEY }}
+      TAVILY_API_KEY:    ${{ secrets.TAVILY_API_KEY }}
+      # J-Quants 認証（スクレイピング系のフォールバックで使用。未設定でも動作）
+      JQUANTS_EMAIL:     ${{ secrets.JQUANTS_EMAIL }}
+      JQUANTS_PASSWORD:  ${{ secrets.JQUANTS_PASSWORD }}
+      # 任意: 完了/失敗サマリーの Slack 通知
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      # 使用モデル（未設定なら settings.py の既定 gemini-3.5-flash）
+      GEMINI_MODEL: gemini-3.5-flash
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run pipeline
+        run: |
+          set -e
+          MODE="${{ inputs.mode || 'full' }}"
+          DATE_ARG="${{ inputs.date }}"
+          ARGS=""
+          if [ -n "$DATE_ARG" ]; then
+            ARGS="$ARGS --date $DATE_ARG"
+          fi
+          case "$MODE" in
+            fetch-only) ARGS="$ARGS --no-theme --no-report" ;;
+            no-news)    ARGS="$ARGS --no-news" ;;
+          esac
+          echo "Mode: $MODE"
+          echo "Date: ${DATE_ARG:-(auto)}"
+          echo "TZ:   $TZ"; date
+          echo "Run:  python -m scripts.fetch_short_ratio $ARGS"
+          python -m scripts.fetch_short_ratio $ARGS
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-logs-${{ github.run_id }}
+          path: |
+            logs/
+            *.log
+          retention-days: 14
+          if-no-files-found: ignore

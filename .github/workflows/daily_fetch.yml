@@ -35,9 +35,8 @@ jobs:
       DATABASE_URL:      ${{ secrets.DATABASE_URL }}
       GEMINI_API_KEY:    ${{ secrets.GEMINI_API_KEY }}
       TAVILY_API_KEY:    ${{ secrets.TAVILY_API_KEY }}
-      # J-Quants 認証（スクレイピング系のフォールバックで使用。未設定でも動作）
-      JQUANTS_EMAIL:     ${{ secrets.JQUANTS_EMAIL }}
-      JQUANTS_PASSWORD:  ${{ secrets.JQUANTS_PASSWORD }}
+      # J-Quants（settings.py が参照するのは JQUANTS_API_KEY）
+      JQUANTS_API_KEY:   ${{ secrets.JQUANTS_API_KEY }}
       # 任意: 完了/失敗サマリーの Slack 通知
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
       # 使用モデル（未設定なら settings.py の既定 gemini-3.5-flash）

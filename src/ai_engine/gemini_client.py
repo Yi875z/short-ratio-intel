@@ -64,7 +64,8 @@ class GeminiReportGenerator:
                     user_prompt,
                     generation_config=genai.GenerationConfig(
                         temperature=0.3,    # 分析の一貫性を重視
-                        max_output_tokens=8192,
+                        # 8192 では大きなレポートJSONが途中で切れて json.loads に失敗するため拡大
+                        max_output_tokens=32768,
                         response_mime_type="application/json",
                     ),
                 )

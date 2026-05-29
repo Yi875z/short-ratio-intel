@@ -35,8 +35,8 @@ jobs:
       DATABASE_URL:      ${{ secrets.DATABASE_URL }}
       GEMINI_API_KEY:    ${{ secrets.GEMINI_API_KEY }}
       TAVILY_API_KEY:    ${{ secrets.TAVILY_API_KEY }}
-      # J-Quants（settings.py が参照するのは JQUANTS_API_KEY）
-      JQUANTS_API_KEY:   ${{ secrets.JQUANTS_API_KEY }}
+      # ※ データ取得は stock-marketdata.com スクレイピング + JPX公開PDF で行うため
+      #   J-Quants の認証キーは不要（jquants_client.py は名前に反しスクレイパー）
       # 任意: 完了/失敗サマリーの Slack 通知
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
       # 使用モデル（未設定なら settings.py の既定 gemini-3.5-flash）
@@ -44,10 +44,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
           cache: 'pip'

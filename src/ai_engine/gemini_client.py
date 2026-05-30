@@ -101,7 +101,7 @@ class GeminiReportGenerator:
         text = self._extract_json_text(raw_text)
 
         try:
-            data = json.loads(text)
+            data = self._loads_json_tolerant(text)
             # モデルが新設フィールドを落とした場合でも、レポート生成を止めない。
             data.setdefault(
                 "jpx_short_selling_breakdown_analysis",
@@ -177,6 +177,22 @@ class GeminiReportGenerator:
         except json.JSONDecodeError as e:
             logger.error(f"JSONパースエラー: {e}\n{text[:500]}")
             raise ValueError(f"Geminiの出力がJSON形式ではありません: {e}")
+
+    @staticmethod
+    def _loads_json_tolerant(text: str) -> dict:
+        """JSONをパースする。厳密に失敗した場合は json-repair で修復して再パースする。
+
+        gemini-3.5-flash は大きな日本語レポートで、文字列値内の未エスケープ引用符・
+        改行・末尾カンマ等を含む壊れたJSONをときどき返す。json-repair で機械修復する。
+        """
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            from json_repair import repair_json
+
+            repaired = repair_json(text)
+            logger.warning("JSONが不正だったため json-repair で修復して再パースしました")
+            return json.loads(repaired)
 
     @staticmethod
     def _extract_json_text(raw_text: str) -> str:

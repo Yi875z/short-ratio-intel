@@ -147,7 +147,7 @@ def _step_report(
         report_date,
         report_obj.current_macro_context,
         markdown,
-        report_json=report_obj.model_dump_json(ensure_ascii=False),
+        report_json=report_obj.model_dump_json(),
         model_used=GEMINI_MODEL,
     )
     logger.info(f"AIレポート保存完了: {len(markdown)}文字")

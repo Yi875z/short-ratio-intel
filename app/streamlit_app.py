@@ -654,7 +654,7 @@ def _render_ai_report_tab(
                 auto_fetch_news=auto_fetch_news,
                 quality_feedback=quality_feedback,
             )
-            report_json = report_obj.model_dump_json(ensure_ascii=False)
+            report_json = report_obj.model_dump_json()
             after_quality_row = _build_report_quality_row_from_markdown(
                 report_date=selected_date,
                 markdown=markdown,

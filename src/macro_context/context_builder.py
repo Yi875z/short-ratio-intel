@@ -5,13 +5,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from config.settings import CURRENT_MACRO_CONTEXT, MARKET_NEWS_AUTO_FETCH
+from config.settings import (
+    CURRENT_MACRO_CONTEXT,
+    MARKET_NEWS_AUTO_FETCH,
+    MARKET_NEWS_RSS_ENABLED,
+)
 from src.macro_context.news_fetcher import (
     MarketNewsItem,
     TavilyNewsFetcher,
     build_market_news_queries,
-    render_news_items_for_prompt,
 )
+from src.macro_context.rss_news_fetcher import RssNewsFetcher, render_rss_items_for_prompt
 from src.macro_context.theme_detector import build_market_theme_context, detect_market_themes
 
 
@@ -26,7 +30,7 @@ class MarketContextBundle:
 
     @property
     def fetched_news_text(self) -> str:
-        return render_news_items_for_prompt(self.fetched_news)
+        return render_rss_items_for_prompt(self.fetched_news)
 
     @property
     def combined_news_text(self) -> str:
@@ -49,11 +53,17 @@ class MarketContextBundle:
         if self.manual_news:
             lines.extend(["", "【手動追加ニュース/市場メモ】", self.manual_news])
         if self.fetched_news:
-            lines.extend(["", "【ニュース検索結果】", self.fetched_news_text])
+            lines.extend([
+                "",
+                f"【ニュース見出し（対象日スコープ / source={self.source_mode}）】",
+                "- ロイター/日経/Bloomberg/Google News の見出しを対象営業日の窓に絞って取得。",
+                "- 見出しは確定事実ではなく材料。数値は本文未確認のため断定しない。",
+                self.fetched_news_text,
+            ])
         else:
             lines.extend([
                 "",
-                "【ニュース検索結果】",
+                "【ニュース見出し】",
                 "自動ニュース取得なし。手動メモまたは固定ベースラインを使用。",
             ])
 
@@ -67,19 +77,33 @@ def build_market_context_bundle(
     baseline_context: str = CURRENT_MACRO_CONTEXT,
     auto_fetch_news: bool = MARKET_NEWS_AUTO_FETCH,
     news_fetcher: TavilyNewsFetcher | None = None,
+    rss_enabled: bool = MARKET_NEWS_RSS_ENABLED,
+    rss_fetcher: RssNewsFetcher | None = None,
 ) -> MarketContextBundle:
     """
     Geminiへ渡す市場コンテキストを構築する。
 
-    auto_fetch_news=False が既定。外部APIの利用は .env で明示有効化する。
+    ニュースは2系統:
+    - RSS（ロイター/日経/Bloomberg/Google News）: 無料・APIキー不要のため既定ON。
+      対象営業日の窓に絞って取得するので過去日レポートでも日付整合が取れる。
+    - Tavily: 要APIキーの任意の補助。auto_fetch_news=True かつキー設定時のみ併用。
     """
     fetched_news: list[MarketNewsItem] = []
-    source_mode = "manual"
+    modes: list[str] = []
+
+    if rss_enabled:
+        fetcher = rss_fetcher or RssNewsFetcher()
+        rss_result = fetcher.fetch_for_date(target_date)
+        fetched_news.extend(rss_result.items)
+        modes.append("rss" if rss_result.items else "rss_no_results")
 
     if auto_fetch_news:
         fetcher = news_fetcher or TavilyNewsFetcher()
-        fetched_news = fetcher.fetch_many(build_market_news_queries(target_date))
-        source_mode = "auto_fetch" if fetched_news else "auto_fetch_no_results"
+        tavily_items = fetcher.fetch_many(build_market_news_queries(target_date))
+        fetched_news.extend(tavily_items)
+        modes.append("tavily" if tavily_items else "tavily_no_results")
+
+    source_mode = "+".join(modes) if modes else "manual"
 
     combined_news = _combine_news_text(manual_news, fetched_news)
     market_theme_context = build_market_theme_context(
@@ -120,5 +144,5 @@ def _combine_news_text(manual_news: str, fetched_news: list[MarketNewsItem]) -> 
     if manual_news:
         parts.append(manual_news)
     if fetched_news:
-        parts.append(render_news_items_for_prompt(fetched_news))
+        parts.append(render_rss_items_for_prompt(fetched_news))
     return "\n\n".join(parts)

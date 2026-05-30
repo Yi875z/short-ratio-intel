@@ -622,3 +622,30 @@ def get_knowledge_document_keys() -> list[str]:
         return list(rows)
     except Exception:  # noqa: BLE001
         return []
+
+
+# ハウスビュー（運用者の常設の相場観）は knowledge_documents を予約キーで再利用する。
+# 専用テーブルを足さないので Supabase 側のマイグレーションは不要。
+HOUSE_VIEW_KEY = "__house_view__"
+
+
+def save_house_view(content: str) -> None:
+    """ハウスビュー本文を保存（UPSERT）する。"""
+    upsert_knowledge_document(HOUSE_VIEW_KEY, content, filename="house_view")
+
+
+def get_house_view() -> Optional[tuple[str, datetime]]:
+    """保存済みハウスビューを (本文, 更新日時UTC) で返す。無ければ None。DB未接続も None。"""
+    try:
+        engine = get_db_engine()
+        with Session(engine) as session:
+            row = session.execute(
+                select(KnowledgeDocument.content, KnowledgeDocument.updated_at)
+                .where(KnowledgeDocument.key == HOUSE_VIEW_KEY)
+            ).one_or_none()
+        if not row or not (row[0] or "").strip():
+            return None
+        return (row[0], row[1])
+    except Exception as e:  # noqa: BLE001 取得失敗で本処理を止めない
+        logger.warning(f"ハウスビューDB取得に失敗: {e}")
+        return None

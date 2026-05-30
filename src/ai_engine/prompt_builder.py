@@ -5,6 +5,10 @@ import json
 from config.settings import CURRENT_MACRO_CONTEXT, MARKET_NEWS_AUTO_FETCH
 from config.signal_thresholds import SIGNAL_THRESHOLDS
 from src.knowledge.loader import load_effective_knowledge
+from src.macro_context.house_view import (
+    build_house_view_prompt_block,
+    effective_macro_context,
+)
 from src.ai_engine.output_schema import ReadingReport
 from src.macro_context.context_builder import (
     build_market_context_bundle,
@@ -45,6 +49,9 @@ def build_system_prompt() -> str:
    2026年のデータに投影することは**厳禁**
 3. 出力の冒頭フィールド `current_macro_context` に現在の背景を必ず明記する
 4. 入力内で「未確認データ」とされた指数・金利・為替・VIX・WTI・GEX等の数値や方向性を事実として断定しない
+5. 【運用者ハウスビュー】が与えられている場合、それを支配的マクロ背景の最優先アンカーとして採用する。
+   当日ニュース見出しと矛盾するときはニュースを優先し、その差分を `theme_shift_analysis` に明記する。
+   ハウスビューが古い/未設定の場合は、ニュース見出しと業種別データから背景を推定する。
 
 ---
 
@@ -254,11 +261,15 @@ def build_user_prompt(
             f"市場売買代金シェア{(other_volume / market_volume * 100) if market_volume else 0:.1f}%"
         )
 
+    # 支配的マクロ背景の起点は「運用者ハウスビュー」を最優先。無ければ固定ベースライン。
+    effective_baseline, baseline_source = effective_macro_context()
+    house_view_block = build_house_view_prompt_block()
+
     market_context = build_market_context_bundle(
         target_date=target_date,
         today_summary=today_summary,
         manual_news=extra_news,
-        baseline_context=CURRENT_MACRO_CONTEXT,
+        baseline_context=effective_baseline,
         auto_fetch_news=(
             auto_fetch_news if auto_fetch_news is not None else MARKET_NEWS_AUTO_FETCH
         ),
@@ -267,6 +278,7 @@ def build_user_prompt(
         target_date=target_date,
         today_summary=today_summary,
         current_news_text=market_context.combined_news_text,
+        baseline_context=effective_baseline,
     )
     quality_feedback_block = ""
     if quality_feedback:
@@ -277,6 +289,8 @@ def build_user_prompt(
 
     return f"""
 【分析対象日】: {target_date}
+
+{house_view_block}
 
 【現在の支配的マクロ背景・市場テーマ判定】:
 {market_context.to_prompt_block()}
@@ -336,6 +350,7 @@ def build_theme_transition_context_for_prompt(
     target_date: str,
     today_summary: dict,
     current_news_text: str = "",
+    baseline_context: str = CURRENT_MACRO_CONTEXT,
 ) -> str:
     """
     保存済み市場テーマ履歴をAIプロンプト用の転換メモへ変換する。
@@ -354,7 +369,7 @@ def build_theme_transition_context_for_prompt(
             target_date,
             today_summary,
             manual_news=current_news_text,
-            baseline_context=CURRENT_MACRO_CONTEXT,
+            baseline_context=baseline_context,
         )
         current_source = "generated_for_prompt_only"
 

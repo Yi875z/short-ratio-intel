@@ -18,8 +18,14 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from config.settings import GEMINI_MODEL, MARKET_NEWS_AUTO_FETCH, TAVILY_API_KEY
+from config.settings import (
+    GEMINI_MODEL,
+    MARKET_NEWS_AUTO_FETCH,
+    MARKET_NEWS_RSS_ENABLED,
+    TAVILY_API_KEY,
+)
 from src.ai_engine.gemini_client import GeminiReportGenerator
+from src.macro_context.house_view import load_house_view, store_house_view
 from src.ai_engine.prompt_builder import build_theme_transition_context_for_prompt
 from src.ai_engine.report_quality import (
     build_quality_comparison,
@@ -187,9 +193,10 @@ def _sidebar() -> str | None:
             st.rerun()
 
         st.divider()
-        st.caption("自動ニュース取得")
-        st.write(f"既定: {'ON' if MARKET_NEWS_AUTO_FETCH else 'OFF'}")
-        st.write(f"Tavily API: {'設定済み' if TAVILY_API_KEY else '未設定'}")
+        st.caption("ニュース取得")
+        st.write(f"RSS(ロイター/日経/Bloomberg/GoogleNews): {'ON' if MARKET_NEWS_RSS_ENABLED else 'OFF'}")
+        st.caption("RSSは無料・対象日スコープで常時取得（既定ON）")
+        st.write(f"Tavily(補助): {'設定済み' if TAVILY_API_KEY else '未設定'}")
 
     return selected_date
 
@@ -601,12 +608,47 @@ def _select_history_theme_names(history_df: pd.DataFrame, current_themes: list[d
     return latest["name"].head(5).tolist()
 
 
+def _render_house_view_editor() -> None:
+    """運用者ハウスビュー（全レポート共通の相場観アンカー）の表示・編集。
+
+    平日19時の自動レポートもこの保存値を使うため、相場観が変わったら更新する。
+    """
+    hv = load_house_view()
+    has_view = bool(hv and hv.content.strip())
+    with st.expander("🧭 運用者ハウスビュー（相場観アンカー｜全レポート共通）", expanded=not has_view):
+        if has_view:
+            if hv.is_stale():
+                st.warning(
+                    f"⚠️ 最終更新 {hv.updated_label()}（約{hv.age_days}日前）。"
+                    "古い見解で自動レポートが生成され続けないよう、更新を推奨します。"
+                )
+            else:
+                st.caption(f"最終更新 {hv.updated_label()}")
+        else:
+            st.info(
+                "未設定です。現在の相場観を入力すると、AIレポートの支配的マクロ背景の"
+                "起点になり、当日ニュースと突合されます（古い固定文より優先）。"
+            )
+        text = st.text_area(
+            "現在の相場観（主役テーマ・金利/為替/原油観・注目セクター・想定リスク等）",
+            value=hv.content if has_view else "",
+            height=160,
+            key="house_view_editor",
+            help="平日19時の自動レポートもこの内容を使います。相場観が変わったら更新してください。",
+        )
+        if st.button("ハウスビューを保存", key="save_house_view"):
+            store_house_view(text)
+            st.success("ハウスビューを保存しました。次回レポートから反映されます。")
+            st.rerun()
+
+
 def _render_ai_report_tab(
     selected_date: str,
     today_summary: dict,
     weekly_df: pd.DataFrame,
     anomalies: list,
 ) -> None:
+    _render_house_view_editor()
     manual_news = st.text_area(
         "AIレポート用 追加ニュース/市場メモ",
         key=f"ai_memo_{selected_date}",

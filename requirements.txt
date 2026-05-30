@@ -1,6 +1,7 @@
 # Core
 requests==2.31.0
 beautifulsoup4==4.12.3
+feedparser==6.0.11  # RSSニュース取得（ロイター/日経/Bloomberg/Google News）。純Python・キー不要
 python-dotenv==1.0.0
 pydantic==2.6.0
 loguru==0.7.2

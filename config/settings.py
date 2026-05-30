@@ -56,6 +56,21 @@ MARKET_NEWS_AUTO_FETCH: bool = _env_bool("MARKET_NEWS_AUTO_FETCH", False)
 MARKET_NEWS_MAX_RESULTS: int = int(os.getenv("MARKET_NEWS_MAX_RESULTS", "5"))
 MARKET_NEWS_TIMEOUT_SECONDS: int = int(os.getenv("MARKET_NEWS_TIMEOUT_SECONDS", "20"))
 
+# ---- RSSニュース（ロイター/日経/Bloomberg + Google News）----
+# 無料・APIキー不要のため既定ON。Tavily(要キー)は任意の補助に降格。
+MARKET_NEWS_RSS_ENABLED: bool = _env_bool("MARKET_NEWS_RSS_ENABLED", True)
+# レポート対象日から何日さかのぼってニュースを拾うか（Google Newsの日付窓）
+MARKET_NEWS_RSS_WINDOW_DAYS: int = int(os.getenv("MARKET_NEWS_RSS_WINDOW_DAYS", "3"))
+# 対象日が今日からこの日数以内なら第三者RSS(現在見出しのみ)も併用する
+MARKET_NEWS_RSS_RECENT_DAYS: int = int(os.getenv("MARKET_NEWS_RSS_RECENT_DAYS", "4"))
+MARKET_NEWS_RSS_MAX_ITEMS: int = int(os.getenv("MARKET_NEWS_RSS_MAX_ITEMS", "12"))
+# 著作権配慮: 既定では見出しのみ。Trueのとき短い要約を一時的にプロンプトへ含める
+MARKET_NEWS_RSS_INCLUDE_SUMMARY: bool = _env_bool("MARKET_NEWS_RSS_INCLUDE_SUMMARY", False)
+
+# ---- ハウスビュー（運用者の常設の相場観）----
+# 最終更新からこの日数を超えたら鮮度警告を出す（自動実行で古い見解を使い続けない）
+HOUSE_VIEW_STALE_DAYS: int = int(os.getenv("HOUSE_VIEW_STALE_DAYS", "14"))
+
 # ---- 現在のマクロ背景（Step 0プロトコル） ----
 # ⚠️ 重要: 相場環境が変化したら必ずここを更新すること
 CURRENT_MACRO_CONTEXT: str = """

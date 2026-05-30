@@ -61,15 +61,30 @@ def load_all_knowledge() -> dict[str, str]:
 
 
 def load_external_knowledge(key: str) -> str:
-    """ChatGPT 5.5 プロジェクト用ナレッジファイルを読み込む。"""
+    """外部ナレッジ（思考データ）を読み込む。
+
+    Supabase(DB) を優先し、無ければローカルファイル（EXTERNAL_KNOWLEDGE_DIR）へ
+    フォールバックする。公開リポにファイルを置かずに、クラウド（Streamlit Cloud /
+    GitHub Actions）でも知見を反映できるようにするため。
+    """
     filename = EXTERNAL_KNOWLEDGE_FILES.get(key)
     if not filename:
         logger.warning(f"不明な外部ナレッジキー: {key}")
         return ""
 
+    # 1) Supabase 優先（クラウド・Actions・DATABASE_URL設定時）
+    from src.storage.db import get_knowledge_document
+
+    content = get_knowledge_document(key)
+    if content:
+        return content
+
+    # 2) ローカルファイルにフォールバック（純ローカル開発・DB未登録時）
     filepath = EXTERNAL_KNOWLEDGE_DIR / filename
     if not filepath.exists():
-        logger.warning(f"外部ナレッジファイルが見つかりません: {filepath}")
+        logger.warning(
+            f"外部ナレッジが DB にもローカルにも見つかりません: {key} ({filepath})"
+        )
         return ""
 
     try:

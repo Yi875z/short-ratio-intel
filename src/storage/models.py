@@ -139,3 +139,22 @@ class MarketNewsSnapshot(Base):
 
     def __repr__(self) -> str:
         return f"<MarketNewsSnapshot date={self.date} title={self.title[:30]}>"
+
+
+class KnowledgeDocument(Base):
+    """外部ナレッジ（思考データ）の本文。
+
+    公開リポジトリにファイルを置かずに済むよう、本文を Supabase に保存する。
+    Streamlit Cloud / GitHub Actions はここから読み、IP を非公開のまま使う。
+    """
+
+    __tablename__ = "knowledge_documents"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    key = Column(String(100), nullable=False, unique=True, index=True)  # 例: global_macro
+    filename = Column(String(200), nullable=False, default="")
+    content = Column(String, nullable=False, default="")
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    def __repr__(self) -> str:
+        return f"<KnowledgeDocument key={self.key} len={len(self.content)}>"

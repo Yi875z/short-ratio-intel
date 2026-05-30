@@ -20,6 +20,7 @@ from config.settings import DB_PATH, REPORTS_DIR
 from src.storage.models import (
     AiReport,
     Base,
+    KnowledgeDocument,
     MarketNewsSnapshot,
     MarketShortRatioDaily,
     MarketThemeSnapshot,
@@ -577,3 +578,47 @@ def get_market_news_snapshots(date: str) -> list[dict]:
         "snippet": row.snippet,
         "score": row.score,
     } for row in rows]
+
+
+# ------------------------------------------------------------------
+# 外部ナレッジ（思考データ）— 公開リポに置かず Supabase に保存
+# ------------------------------------------------------------------
+def upsert_knowledge_document(key: str, content: str, filename: str = "") -> None:
+    """ナレッジ本文を key 単位で UPSERT する。"""
+    engine = get_db_engine()
+    with Session(engine) as session:
+        existing = session.execute(
+            select(KnowledgeDocument).where(KnowledgeDocument.key == key)
+        ).scalar_one_or_none()
+        if existing:
+            existing.content = content
+            existing.filename = filename or existing.filename
+            existing.updated_at = datetime.utcnow()
+        else:
+            session.add(KnowledgeDocument(key=key, filename=filename, content=content))
+        session.commit()
+
+
+def get_knowledge_document(key: str) -> Optional[str]:
+    """指定キーのナレッジ本文を返す。無ければ None。DB未接続時も例外を投げず None。"""
+    try:
+        engine = get_db_engine()
+        with Session(engine) as session:
+            row = session.execute(
+                select(KnowledgeDocument.content).where(KnowledgeDocument.key == key)
+            ).scalar_one_or_none()
+        return row or None
+    except Exception as e:  # noqa: BLE001 ナレッジ取得失敗で本処理を止めない
+        logger.warning(f"ナレッジDB取得に失敗（ローカルファイルにフォールバック）: {e}")
+        return None
+
+
+def get_knowledge_document_keys() -> list[str]:
+    """保存済みナレッジの key 一覧を返す。"""
+    try:
+        engine = get_db_engine()
+        with Session(engine) as session:
+            rows = session.execute(select(KnowledgeDocument.key)).scalars().all()
+        return list(rows)
+    except Exception:  # noqa: BLE001
+        return []

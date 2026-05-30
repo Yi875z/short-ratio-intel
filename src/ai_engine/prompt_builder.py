@@ -5,6 +5,7 @@ import json
 from config.settings import CURRENT_MACRO_CONTEXT, MARKET_NEWS_AUTO_FETCH
 from config.signal_thresholds import SIGNAL_THRESHOLDS
 from src.knowledge.loader import load_effective_knowledge
+from src.macro_context.event_calendar import build_event_calendar_prompt_block
 from src.macro_context.house_view import (
     build_house_view_prompt_block,
     effective_macro_context,
@@ -129,6 +130,24 @@ Markdownのコードブロック（```）は使わず、純粋なJSONのみを�
 - 消滅シグナルは売り圧力後退の可能性。ただし1日だけの消滅はノイズ扱いにする
 - 戦略示唆では、継続シグナルは「順張り・警戒継続」、新規シグナルは「監視・小さく試す」、消滅シグナルは「反転確認待ち」と分ける
 - シグナル履歴を使う場合も、空売り比率は残高ではなく日次フローである点を維持する
+
+## 市場イベント・カレンダーの解釈ルール
+- 入力の【市場イベント・カレンダー】を解釈の前提に使う。MSCI入替・SQ・先物ロールが当日〜数日内にある場合、その他（33業種外）の急騰や価格規制なし比率の上昇は、まずインデックス連動の機械的フロー（パッシブ・裁定）で説明できないかを最優先で検討し、方向性売り（弱気）と断定しない。
+- FOMC・日銀会合の直前は、リスク回避のヘッジ・ショート積み増しが起きやすく、通過後は巻き戻し（ショートカバー）が起きやすい。イベント前の空売り比率上昇を「確信的な弱気」と断定しない。
+- 該当イベントが無い需給変化のみ、テーマ・ニュース・業種特性で説明する。イベントが効いている場合は `other_category_impact` や `false_positive_risks` でその旨を明記する。
+
+## 支配的マクロ背景のレジーム裁定（重要）
+- 冒頭の `current_macro_context` では、当日を「リスクオン／リスクオフ／レンジ・様子見」のいずれの体制かを1つ明示する（両論併記で終わらせない）。
+- 米金利低下期待（Fed緩和）と、原油・地政学によるインフレ再燃（金利上昇）のような競合ナラティブが併存する場合は、当日のニュース見出し・業種別需給・イベント予定からどちらが優勢かを裁定し、劣勢側は「リスク要因」として位置づける。
+- ハウスビューの体制観と当日データが食い違う場合は、`theme_shift_analysis` で「ハウスビューはX体制だが当日はY寄り」と差分を明示する。
+
+## テーマ判定の追加ルール（重要）
+- 主要テーマの根拠に「業種別空売り比率の高さ」を使うときは、継続シグナル（長期間継続して高い業種）を根拠から除外する。長期継続の高空売りは当日テーマではなく構造的な需給であり、特定ニュースの裏付けに流用しない。テーマ整合は「前日比の急変」「新規発生シグナル」で評価する。
+- 運用者ハウスビューや主役テーマが半導体・AI・グロースを挙げている場合は、電気機器・精密機器・情報・通信業の需給を必ず個別に解説する。低空売りでも「売り手が攻めあぐねている／押し目買い意欲が強い」等の含意を述べ、主役テーマを放置しない。
+
+## ニュース見出しの数値の扱い
+- ニュース見出しに具体的数値（為替水準・金利/利回り・指数値）が含まれる場合は「報道ベース」と明示して引用してよく、`unverified_market_data` には入れない。
+- 見出しに数値が無い指標のみ `unverified_market_data` に列挙する。報道で水準が判明しているものを未確認扱いしない。
 """
 
 
@@ -264,6 +283,7 @@ def build_user_prompt(
     # 支配的マクロ背景の起点は「運用者ハウスビュー」を最優先。無ければ固定ベースライン。
     effective_baseline, baseline_source = effective_macro_context()
     house_view_block = build_house_view_prompt_block()
+    event_calendar_block = build_event_calendar_prompt_block(target_date)
 
     market_context = build_market_context_bundle(
         target_date=target_date,
@@ -291,6 +311,8 @@ def build_user_prompt(
 【分析対象日】: {target_date}
 
 {house_view_block}
+
+{event_calendar_block}
 
 【現在の支配的マクロ背景・市場テーマ判定】:
 {market_context.to_prompt_block()}

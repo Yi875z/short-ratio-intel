@@ -63,7 +63,7 @@ MARKET_NEWS_RSS_ENABLED: bool = _env_bool("MARKET_NEWS_RSS_ENABLED", True)
 MARKET_NEWS_RSS_WINDOW_DAYS: int = int(os.getenv("MARKET_NEWS_RSS_WINDOW_DAYS", "3"))
 # 対象日が今日からこの日数以内なら第三者RSS(現在見出しのみ)も併用する
 MARKET_NEWS_RSS_RECENT_DAYS: int = int(os.getenv("MARKET_NEWS_RSS_RECENT_DAYS", "4"))
-MARKET_NEWS_RSS_MAX_ITEMS: int = int(os.getenv("MARKET_NEWS_RSS_MAX_ITEMS", "12"))
+MARKET_NEWS_RSS_MAX_ITEMS: int = int(os.getenv("MARKET_NEWS_RSS_MAX_ITEMS", "16"))
 # 著作権配慮: 既定では見出しのみ。Trueのとき短い要約を一時的にプロンプトへ含める
 MARKET_NEWS_RSS_INCLUDE_SUMMARY: bool = _env_bool("MARKET_NEWS_RSS_INCLUDE_SUMMARY", False)
 

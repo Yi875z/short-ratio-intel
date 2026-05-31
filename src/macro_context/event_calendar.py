@@ -180,6 +180,16 @@ def get_events_for_date(
     return in_window
 
 
+def get_events_for_month(year: int, month: int) -> list[MarketEvent]:
+    """指定月内の全イベント（計算系＋キュレーション）を日付順で返す。月間カレンダー表示用。"""
+    events = list(_computed_events_for_month(year, month))
+    for event in _curated_events():
+        if event.event_date.year == year and event.event_date.month == month:
+            events.append(event)
+    events.sort(key=lambda e: (e.event_date, e.importance))
+    return events
+
+
 def build_event_calendar_prompt_block(target_date: str) -> str:
     """プロンプトへ注入する市場イベント・カレンダーのブロックを返す。"""
     try:

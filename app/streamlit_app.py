@@ -28,6 +28,7 @@ from src.ai_engine.gemini_client import GeminiReportGenerator
 from src.macro_context.event_calendar import (
     earnings_season_label,
     get_events_for_date,
+    get_events_for_month,
 )
 from src.macro_context.house_view import load_house_view, store_house_view
 from src.ai_engine.prompt_builder import build_theme_transition_context_for_prompt
@@ -135,8 +136,16 @@ def main() -> None:
     anomalies = AnomalyDetector().detect(today_summary, weekly_df)
     _attach_flow_signals(today_summary, selected_date, calc, market_trend_df)
 
-    overview_tab, sectors_tab, breakdown_tab, theme_tab, report_tab, history_tab = st.tabs(
-        ["概要", "業種", "JPX内訳", "市場テーマ", "AIレポート", "履歴"]
+    (
+        overview_tab,
+        sectors_tab,
+        breakdown_tab,
+        theme_tab,
+        calendar_tab,
+        report_tab,
+        history_tab,
+    ) = st.tabs(
+        ["概要", "業種", "JPX内訳", "市場テーマ", "📅 カレンダー", "AIレポート", "履歴"]
     )
 
     with overview_tab:
@@ -147,10 +156,137 @@ def main() -> None:
         _render_breakdown(today_summary)
     with theme_tab:
         _render_market_theme_tab(selected_date, today_summary)
+    with calendar_tab:
+        _render_calendar_tab(selected_date)
     with report_tab:
         _render_ai_report_tab(selected_date, today_summary, weekly_df, anomalies)
     with history_tab:
         _render_history_tab(selected_date)
+
+
+def _shift_ym(year: int, month: int, delta: int) -> tuple[int, int]:
+    index = year * 12 + (month - 1) + delta
+    return index // 12, index % 12 + 1
+
+
+def _cal_html_text(s: str) -> str:
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _cal_html_attr(s: str) -> str:
+    return _cal_html_text(s).replace('"', "&quot;")
+
+
+def _build_calendar_html(year: int, month: int, by_day: dict, highlight) -> str:
+    """月間カレンダーのHTMLを生成する（日曜始まり・イベントチップ付き）。"""
+    import calendar as _cal
+
+    weeks = _cal.Calendar(firstweekday=6).monthdayscalendar(year, month)
+    head = ["日", "月", "火", "水", "木", "金", "土"]
+    parts = ["<table style='width:100%;border-collapse:collapse;table-layout:fixed;'>", "<tr>"]
+    for i, label in enumerate(head):
+        color = "#c0392b" if i == 0 else ("#2c6fbb" if i == 6 else "#333")
+        parts.append(
+            f"<th style='border:1px solid #ddd;padding:4px;background:#f5f5f5;"
+            f"color:{color};font-size:12px;'>{label}</th>"
+        )
+    parts.append("</tr>")
+
+    for week in weeks:
+        parts.append("<tr>")
+        for i, day in enumerate(week):
+            if day == 0:
+                parts.append("<td style='border:1px solid #eee;height:92px;background:#fafafa;'></td>")
+                continue
+            is_anchor = (
+                highlight is not None
+                and day == highlight.day
+                and month == highlight.month
+                and year == highlight.year
+            )
+            day_color = "#c0392b" if i == 0 else ("#2c6fbb" if i == 6 else "#999")
+            cell_bg = "#fffbe6" if is_anchor else "#fff"
+            border = "2px solid #f1c40f" if is_anchor else "1px solid #ddd"
+            chips = []
+            for e in by_day.get(day, []):
+                jp = e.region == "JP"
+                bg = "#fdecea" if jp else "#e8f0fb"
+                fg = "#c0392b" if jp else "#1f5fa8"
+                star = "★" if e.importance == "high" else ""
+                name = e.name if len(e.name) <= 16 else e.name[:15] + "…"
+                chips.append(
+                    f"<div title=\"{_cal_html_attr(e.name + ' — ' + e.note)}\" "
+                    f"style='font-size:10px;margin:1px 0;padding:1px 3px;border-radius:3px;"
+                    f"background:{bg};color:{fg};white-space:nowrap;overflow:hidden;"
+                    f"text-overflow:ellipsis;'>{star}{_cal_html_text(name)}</div>"
+                )
+            parts.append(
+                f"<td style='border:{border};height:92px;vertical-align:top;padding:2px;"
+                f"background:{cell_bg};'>"
+                f"<div style='font-size:11px;text-align:right;color:{day_color};'>{day}</div>"
+                f"{''.join(chips)}</td>"
+            )
+        parts.append("</tr>")
+    parts.append("</table>")
+    return "".join(parts)
+
+
+def _render_calendar_tab(selected_date: str) -> None:
+    """月間の市場イベント・カレンダーを中央に表示する（サイドバー一覧と併存）。"""
+    from datetime import date, datetime
+
+    st.subheader("📅 市場イベント・カレンダー（月間）")
+    st.caption(
+        "SQ・MSCI入替・先物ロール・配当落ち・米雇用統計・FOMC・日銀会合などの予定。"
+        "AIレポートにも同じカレンダー情報が反映されます。"
+    )
+
+    try:
+        anchor = datetime.strptime(selected_date, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        anchor = date.today()
+    if "cal_year" not in st.session_state:
+        st.session_state.cal_year = anchor.year
+        st.session_state.cal_month = anchor.month
+
+    c1, c2, c3 = st.columns([1, 3, 1])
+    with c1:
+        if st.button("← 前月", key="cal_prev", use_container_width=True):
+            st.session_state.cal_year, st.session_state.cal_month = _shift_ym(
+                st.session_state.cal_year, st.session_state.cal_month, -1
+            )
+    with c3:
+        if st.button("翌月 →", key="cal_next", use_container_width=True):
+            st.session_state.cal_year, st.session_state.cal_month = _shift_ym(
+                st.session_state.cal_year, st.session_state.cal_month, 1
+            )
+    with c2:
+        st.markdown(
+            f"<h3 style='text-align:center;margin:0;'>"
+            f"{st.session_state.cal_year}年 {st.session_state.cal_month}月</h3>",
+            unsafe_allow_html=True,
+        )
+
+    year, month = st.session_state.cal_year, st.session_state.cal_month
+    events = get_events_for_month(year, month)
+    by_day: dict[int, list] = {}
+    for e in events:
+        by_day.setdefault(e.event_date.day, []).append(e)
+
+    st.markdown(_build_calendar_html(year, month, by_day, anchor), unsafe_allow_html=True)
+    st.caption(
+        "🟥 日本(JP) ／ 🟦 米国(US)　｜　★=重要度high　｜　"
+        "黄枠=分析日　｜　チップにカーソルを乗せると詳細"
+    )
+
+    if events:
+        with st.expander("この月のイベント一覧（テキスト）", expanded=False):
+            for e in events:
+                st.markdown(
+                    f"- **{e.event_date.isoformat()}**（{e.region}・"
+                    f"{'★high' if e.importance == 'high' else e.importance}） "
+                    f"{e.name} — {e.note}"
+                )
 
 
 def _render_sidebar_event_calendar(target_date: str) -> None:

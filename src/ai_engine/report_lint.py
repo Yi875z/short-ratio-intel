@@ -105,7 +105,10 @@ def lint_report_markdown(
         if not stripped:
             continue
         if stripped.startswith("#"):
+            # 見出し行はセクション名・テーマ名・業種名のラベルであり数値の断定ではない。
+            # 例: "### BOJ・ドル円・日本株バリュー/グロース" の「ドル円」を誤検知しない。
             current_section = stripped
+            continue
 
         for pattern in FORBIDDEN_CERTAINTY_PATTERNS:
             if pattern in stripped:

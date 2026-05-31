@@ -35,6 +35,10 @@ jobs:
       DATABASE_URL:      ${{ secrets.DATABASE_URL }}
       GEMINI_API_KEY:    ${{ secrets.GEMINI_API_KEY }}
       TAVILY_API_KEY:    ${{ secrets.TAVILY_API_KEY }}
+      # 投資主体別フロー突合（姉妹プロジェクト jpx-analysis の別Supabase 読み取り）
+      # 未設定なら機関フロー突合はスキップ（fail-soft）。
+      JPX_ANALYSIS_SUPABASE_URL: ${{ secrets.JPX_ANALYSIS_SUPABASE_URL }}
+      JPX_ANALYSIS_SUPABASE_KEY: ${{ secrets.JPX_ANALYSIS_SUPABASE_KEY }}
       # ※ データ取得は stock-marketdata.com スクレイピング + JPX公開PDF で行うため
       #   J-Quants の認証キーは不要（jquants_client.py は名前に反しスクレイパー）
       # 任意: 完了/失敗サマリーの Slack 通知

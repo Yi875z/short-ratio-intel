@@ -365,6 +365,7 @@ def build_user_prompt(
 出力では `signal_history_analysis`、`persistent_signal_summary`、`new_signal_summary`、`faded_signal_summary` に必ず履歴分析を記述してください。
 出力では `investment_guardrails`、`confirmation_conditions`、`false_positive_risks`、`additional_data_to_check` に必ず投資判断ガードレールを記述してください。
 出力では `dominant_market_themes`、`theme_shift_analysis`、`theme_sector_alignment`、`unverified_market_data` に必ず市場テーマ判定を記述してください。
+出力では `event_calendar_context` に市場イベント・カレンダーと当日需給の関係を必ず記述してください。特に「その他（33業種外）」の急騰や価格規制なし比率の上昇は、当日近傍のMSCI入替・SQ・先物ロールがあれば機械的フローとして突合し、`other_category_impact` にもその旨を明記してください。
 """
 
 

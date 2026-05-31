@@ -132,6 +132,10 @@ class GeminiReportGenerator:
                 "消滅・弱体化シグナルの専用分析は未生成です。",
             )
             data.setdefault(
+                "event_calendar_context",
+                "市場イベント文脈の専用分析は未生成です。",
+            )
+            data.setdefault(
                 "investment_guardrails",
                 [
                     "本レポートは売買推奨ではなく、JPX日次フローを使った需給分析です。",
@@ -240,6 +244,9 @@ class GeminiReportGenerator:
             "",
             f"## 🧩 その他（33業種外）の影響",
             f"{report.other_category_impact}",
+            "",
+            f"## 🗓️ 市場イベント文脈",
+            f"{report.event_calendar_context}",
             "",
             f"## 📅 週次トレンド解析",
             f"{report.weekly_trend_analysis}",

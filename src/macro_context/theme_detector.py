@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from config.settings import MARKET_THEME_MAX_ITEMS, MARKET_THEME_MIN_SCORE
+from config.signal_thresholds import SIGNAL_THRESHOLDS
 from src.macro_context.market_snapshot import build_market_snapshot
 
 
@@ -178,13 +179,15 @@ def detect_market_themes(
     """入力テキストと空売りデータから主要テーマ候補を返す。"""
     text = "\n".join([baseline_context or "", extra_news or ""])
     candidates: list[ThemeCandidate] = []
+    # 長期継続の高空売り業種は構造的需給であり、当日テーマの裏付けに流用しない
+    persistent_sectors = _persistent_sectors(today_summary)
 
     for definition in THEME_DEFINITIONS:
         keyword_hits = _keyword_hits(text, definition.keywords)
         news_score = min(len(keyword_hits), 3)
         market_score = _market_reaction_score(text, definition.keywords)
         alignment_score, alignment_text, alignment_evidence = _short_ratio_alignment(
-            today_summary, definition.related_sectors
+            today_summary, definition.related_sectors, persistent_sectors
         )
         score = news_score + market_score + alignment_score
 
@@ -292,10 +295,32 @@ def _market_reaction_score(text: str, keywords: list[str]) -> float:
     return 1.0 if any(word in text for word in reaction_words) else 0.0
 
 
+def _persistent_sectors(today_summary: dict) -> set[str]:
+    """長期継続シグナルが立っている業種名の集合を返す。
+
+    テーマ整合スコアから「構造的需給」を除外するために使う。継続日数が設定閾値以上の
+    「継続」状態シグナルのターゲット業種が対象。当日テーマ（ニュース）の裏付けに
+    14日継続のような構造的フローを流用する確証バイアスを防ぐ。
+    """
+    threshold = SIGNAL_THRESHOLDS.persistent_signal_days
+    history = today_summary.get("flow_signal_history", []) or []
+    sectors: set[str] = set()
+    for item in history:
+        if item.get("state") != "継続":
+            continue
+        streak = item.get("streak_days") or item.get("active_days") or 0
+        target = item.get("target") or ""
+        if target and streak >= threshold:
+            sectors.add(target)
+    return sectors
+
+
 def _short_ratio_alignment(
     today_summary: dict,
     related_sectors: list[str],
+    persistent_sectors: set[str] | None = None,
 ) -> tuple[float, str, list[str]]:
+    persistent_sectors = persistent_sectors or set()
     sector_data = today_summary.get("sector_data", []) or []
     matched = [
         sector
@@ -305,10 +330,12 @@ def _short_ratio_alignment(
     if not matched:
         return 0.0, "関連業種データなし。", []
 
+    # 高空売りでも長期継続シグナルの業種は構造的需給なのでテーマ整合の加点から除外する
     high = [
         sector
         for sector in matched
         if (sector.get("short_ratio_pct") or 0) >= 47.0
+        and sector.get("sector_name") not in persistent_sectors
     ]
     spikes = [
         sector
@@ -316,11 +343,17 @@ def _short_ratio_alignment(
         if sector.get("dod_change") is not None
         and abs(sector.get("dod_change") or 0) >= 3.0
     ]
+    excluded = [
+        sector
+        for sector in matched
+        if (sector.get("short_ratio_pct") or 0) >= 47.0
+        and sector.get("sector_name") in persistent_sectors
+    ]
 
     evidence = []
     if high:
         evidence.append(
-            "高空売り関連業種: "
+            "高空売り関連業種(継続除く): "
             + ", ".join(
                 f"{s['sector_name']}({s['short_ratio_pct']:.1f}%)"
                 for s in high[:4]
@@ -334,14 +367,19 @@ def _short_ratio_alignment(
                 for s in spikes[:4]
             )
         )
+    if excluded:
+        evidence.append(
+            "※構造的需給として除外(長期継続): "
+            + ", ".join(f"{s['sector_name']}" for s in excluded[:4])
+        )
 
     score = min(len(high), 2) + min(len(spikes), 2) * 0.5
     if score >= 2.0:
-        text = "高い。関連業種の空売り比率または前日比急変が目立つ。"
+        text = "高い。関連業種で新規の高空売り・前日比急変が目立つ（長期継続業種は除外）。"
     elif score > 0:
-        text = "一部あり。関連業種に高水準または急変がある。"
+        text = "一部あり。関連業種に新規の高水準または急変がある（長期継続業種は除外）。"
     else:
-        text = "限定的。関連業種の空売り比率だけではテーマを裏付けにくい。"
+        text = "限定的。新規の裏付けは弱い（長期継続の高空売りは構造的需給として除外済み）。"
 
     return score, text, evidence
 

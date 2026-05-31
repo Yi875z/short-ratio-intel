@@ -56,7 +56,20 @@ class ReadingReport(BaseModel):
     )
 
     other_category_impact: str = Field(
-        description="その他（33業種外：ETF・REIT等）の市場全体への影響と無視してよいかの判断"
+        description=(
+            "その他（33業種外：ETF・REIT等）の市場全体への影響と無視してよいかの判断。"
+            "入力の市場イベント・カレンダーに当日近傍のMSCI入替・SQ・先物ロールがある場合は、"
+            "その他の急騰や規制なし比率の上昇を当該イベント由来の機械的フローとして突合し、明記する"
+        )
+    )
+
+    event_calendar_context: str = Field(
+        default="市場イベント文脈の専用分析は未生成です。",
+        description=(
+            "入力の市場イベント・カレンダーと当日の空売り需給の関係。特に当日近傍の"
+            "MSCI入替・SQ・先物ロールが、その他（33業種外）や価格規制なし比率の機械的フローを"
+            "どの程度説明するかを明記。FOMC・日銀会合が近い場合は通過前後の需給バイアスにも言及する"
+        )
     )
 
     weekly_trend_analysis: str = Field(

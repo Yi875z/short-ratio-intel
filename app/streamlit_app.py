@@ -25,6 +25,10 @@ from config.settings import (
     TAVILY_API_KEY,
 )
 from src.ai_engine.gemini_client import GeminiReportGenerator
+from src.macro_context.event_calendar import (
+    earnings_season_label,
+    get_events_for_date,
+)
 from src.macro_context.house_view import load_house_view, store_house_view
 from src.ai_engine.prompt_builder import build_theme_transition_context_for_prompt
 from src.ai_engine.report_quality import (
@@ -149,6 +153,35 @@ def main() -> None:
         _render_history_tab(selected_date)
 
 
+def _render_sidebar_event_calendar(target_date: str) -> None:
+    """サイドバーに対象日基準の市場イベント（MSCI入替/SQ/FOMC/日銀等）を常時表示する。
+
+    レポートと並べて確認できるよう、AIに渡すカレンダーと同じ内容をユーザーにも見せる。
+    """
+    from datetime import datetime
+
+    try:
+        target = datetime.strptime(target_date, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return
+
+    events = get_events_for_date(target_date)
+    season = earnings_season_label(target)
+    with st.expander("📅 市場イベント（対象日基準）", expanded=False):
+        if season:
+            st.caption(f"決算期: {season}")
+        if not events:
+            st.caption("対象日前後に主要な予定イベントは検出されず。")
+            return
+        for e in events:
+            mark = "🔴" if e.importance == "high" else "▫️"
+            st.markdown(
+                f"{mark} **{e.event_date.isoformat()}**"
+                f"（{e.relation_label(target)}・{e.region}）  \n{e.name}",
+                help=e.note,
+            )
+
+
 def _sidebar() -> str | None:
     with st.sidebar:
         st.header("操作")
@@ -197,6 +230,10 @@ def _sidebar() -> str | None:
         st.write(f"RSS(ロイター/日経/Bloomberg/GoogleNews): {'ON' if MARKET_NEWS_RSS_ENABLED else 'OFF'}")
         st.caption("RSSは無料・対象日スコープで常時取得（既定ON）")
         st.write(f"Tavily(補助): {'設定済み' if TAVILY_API_KEY else '未設定'}")
+
+        if selected_date:
+            st.divider()
+            _render_sidebar_event_calendar(selected_date)
 
     return selected_date
 

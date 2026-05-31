@@ -63,6 +63,25 @@ CERTAINTY_CAUTION_MARKERS = CAUTION_CONTEXT_MARKERS + [
     "とは限らない",
 ]
 
+# データ項目チェック専用の許容マーカー。報道引用・思惑・影響経路の説明など
+# 「値を事実として断定していない」フレーミングは未確認断定とみなさない（(C)対応）。
+DATA_CAUTION_MARKERS = CAUTION_CONTEXT_MARKERS + [
+    "報道",
+    "報道ベース",
+    "思惑",
+    "観測",
+    "期待",
+    "懸念",
+    "見通し",
+    "影響経路",
+    "経由",
+    "通じ",
+    "に伴う",
+    "背景",
+    "とされ",
+    "示唆",
+]
+
 CHECKLIST_SECTION_MARKERS = [
     "追加で見るべきデータ",
     "次の監視ポイント",
@@ -108,7 +127,7 @@ def lint_report_markdown(
                 continue
             if any(marker in current_section for marker in CHECKLIST_SECTION_MARKERS):
                 continue
-            if any(marker in stripped for marker in CAUTION_CONTEXT_MARKERS):
+            if any(marker in stripped for marker in DATA_CAUTION_MARKERS):
                 continue
             issues.append(
                 ReportLintIssue(

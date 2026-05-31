@@ -19,33 +19,51 @@ from loguru import logger
 from config.settings import MARKET_NEWS_TIMEOUT_SECONDS
 
 
-def _resolve_secret(name: str) -> str:
-    """環境変数→Streamlit Secrets の順で秘密値を解決する。
+def _iter_secret_items():
+    """st.secrets を (key, value) で走査（トップレベル＋1段ネストの [section] 内も）。"""
+    try:
+        import streamlit as st
 
-    Streamlit Cloud は通常 Secrets を os.environ にも注入するが、反映タイミングや
-    取り込み方の差で os.getenv が空になることがあるため、st.secrets も参照する。
-    GitHub Actions 等の Streamlit 非実行環境では os.getenv のみ有効。
+        for k, v in st.secrets.items():
+            yield str(k), v
+            if hasattr(v, "items"):  # [section] テーブルの中も見る
+                for k2, v2 in v.items():
+                    yield str(k2), v2
+    except Exception:
+        return
+
+
+def _resolve_secret(name: str) -> str:
+    """環境変数→Streamlit Secrets（トップレベル＋[section]内）の順で秘密値を解決する。
+
+    Streamlit Cloud は通常 Secrets を os.environ にも注入するが取りこぼしがあり、
+    また 2行を [auth] 等のセクション後に貼ると TOML 上はその中に入れ子になるため、
+    ネストも走査して拾えるようにする。GitHub Actions 等では os.getenv のみ有効。
     """
     value = os.getenv(name, "")
     if value:
         return value
-    try:
-        import streamlit as st
-
-        v = st.secrets.get(name, "")
-        return str(v) if v else ""
-    except Exception:
-        return ""
+    for key, val in _iter_secret_items():
+        if key == name and isinstance(val, str) and val:
+            return val
+    return ""
 
 
 def _secret_names() -> list[str]:
-    """保存済み Streamlit Secrets のトップレベル名一覧（値は含まない・診断用）。"""
+    """保存済み Secrets 名一覧（値は含まない・診断用）。ネストは section.key で表示。"""
+    names: list[str] = []
     try:
         import streamlit as st
 
-        return sorted(str(k) for k in st.secrets.keys())
+        for k, v in st.secrets.items():
+            if hasattr(v, "items"):
+                names.append(f"[{k}]")
+                names.extend(f"{k}.{k2}" for k2 in v.keys())
+            else:
+                names.append(str(k))
     except Exception:
         return []
+    return sorted(names)
 
 # jpx-analysis の investor_type → 表示ラベル（外国人→海外投資家の呼称に統一）
 _INVESTOR_LABELS = {

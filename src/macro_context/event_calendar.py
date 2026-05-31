@@ -131,6 +131,21 @@ def _computed_events_for_month(year: int, month: int) -> list[MarketEvent]:
         "米金利・ドル円の振れ要因。日付は目安（第1金曜）。月により第2金曜にずれるため実日程は要確認。",
     ))
 
+    # 物価指標（目安）。確定日が全月分は未取得のため典型タイミングで表示し実日程要確認。
+    # 米CPI は config.market_calendar に確認済み日付があり、ここでは重複回避のため出さない。
+    events.append(MarketEvent(
+        "米PPI（生産者物価・目安）", nth_weekday(year, month, 3, 2), "ppi", "US", "medium",
+        "米インフレの川上指標。日付は目安（2週目木曜・CPI前後）。実日程は要確認。",
+    ))
+    events.append(MarketEvent(
+        "日本CPI（全国・目安）", nth_weekday(year, month, 4, 4), "cpi", "JP", "medium",
+        "国内インフレ・日銀政策観の指標（総務省）。日付は目安（第4金曜）。実日程は要確認。",
+    ))
+    events.append(MarketEvent(
+        "日本PPI（企業物価・目安）", nth_weekday(year, month, 2, 2), "ppi", "JP", "medium",
+        "国内の川上インフレ指標（日銀）。日付は目安（2週目水曜）。実日程は要確認。",
+    ))
+
     return events
 
 

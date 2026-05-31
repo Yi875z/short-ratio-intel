@@ -10,16 +10,42 @@ JPX_ANALYSIS_SUPABASE_URL / _KEY 未設定、または取得失敗時は None �
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 
 import requests
 from loguru import logger
 
-from config.settings import (
-    JPX_ANALYSIS_SUPABASE_KEY,
-    JPX_ANALYSIS_SUPABASE_URL,
-    MARKET_NEWS_TIMEOUT_SECONDS,
-)
+from config.settings import MARKET_NEWS_TIMEOUT_SECONDS
+
+
+def _resolve_secret(name: str) -> str:
+    """環境変数→Streamlit Secrets の順で秘密値を解決する。
+
+    Streamlit Cloud は通常 Secrets を os.environ にも注入するが、反映タイミングや
+    取り込み方の差で os.getenv が空になることがあるため、st.secrets も参照する。
+    GitHub Actions 等の Streamlit 非実行環境では os.getenv のみ有効。
+    """
+    value = os.getenv(name, "")
+    if value:
+        return value
+    try:
+        import streamlit as st
+
+        v = st.secrets.get(name, "")
+        return str(v) if v else ""
+    except Exception:
+        return ""
+
+
+def _secret_names() -> list[str]:
+    """保存済み Streamlit Secrets のトップレベル名一覧（値は含まない・診断用）。"""
+    try:
+        import streamlit as st
+
+        return sorted(str(k) for k in st.secrets.keys())
+    except Exception:
+        return []
 
 # jpx-analysis の investor_type → 表示ラベル（外国人→海外投資家の呼称に統一）
 _INVESTOR_LABELS = {
@@ -51,12 +77,14 @@ class InvestorFlowSnapshot:
 
 
 def _rest_get(path: str, params: dict) -> list[dict] | None:
-    if not JPX_ANALYSIS_SUPABASE_URL or not JPX_ANALYSIS_SUPABASE_KEY:
+    url = _resolve_secret("JPX_ANALYSIS_SUPABASE_URL")
+    key = _resolve_secret("JPX_ANALYSIS_SUPABASE_KEY")
+    if not url or not key:
         return None
-    base = JPX_ANALYSIS_SUPABASE_URL.rstrip("/")
+    base = url.rstrip("/")
     headers = {
-        "apikey": JPX_ANALYSIS_SUPABASE_KEY,
-        "Authorization": f"Bearer {JPX_ANALYSIS_SUPABASE_KEY}",
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
     }
     try:
         resp = requests.get(
@@ -117,25 +145,29 @@ def fetch_investor_flow(target_date: str) -> InvestorFlowSnapshot | None:
 
 
 def diagnose_connection(target_date: str) -> dict:
-    """接続診断（秘密値は返さない）。設定有無・HTTPステータス・件数・エラーを返す。"""
+    """接続診断（秘密値は返さない）。設定有無・保存済みSecret名・HTTP状態を返す。"""
+    url = _resolve_secret("JPX_ANALYSIS_SUPABASE_URL")
+    key = _resolve_secret("JPX_ANALYSIS_SUPABASE_KEY")
     info: dict = {
-        "url_set": bool(JPX_ANALYSIS_SUPABASE_URL),
-        "key_set": bool(JPX_ANALYSIS_SUPABASE_KEY),
-        "key_prefix": (JPX_ANALYSIS_SUPABASE_KEY[:3] + "…") if JPX_ANALYSIS_SUPABASE_KEY else "",
-        "url_host": "",
+        "url_set": bool(url),
+        "key_set": bool(key),
+        "key_prefix": (key[:3] + "…") if key else "",
+        "url_host": url.rstrip("/").split("//")[-1] if url else "",
+        "保存済みSecret名": _secret_names(),
         "status": None,
         "rows": None,
         "error": "",
     }
-    if JPX_ANALYSIS_SUPABASE_URL:
-        info["url_host"] = JPX_ANALYSIS_SUPABASE_URL.rstrip("/").split("//")[-1]
-    if not info["url_set"] or not info["key_set"]:
-        info["error"] = "URLまたはKEYが未設定（Secretの名前・保存・Rebootを確認）"
+    if not url or not key:
+        info["error"] = (
+            "URLまたはKEYが未設定。『保存済みSecret名』に JPX_ANALYSIS_SUPABASE_URL / "
+            "JPX_ANALYSIS_SUPABASE_KEY が正確に含まれるか（綴り・セクション無し・保存・Reboot）を確認"
+        )
         return info
-    base = JPX_ANALYSIS_SUPABASE_URL.rstrip("/")
+    base = url.rstrip("/")
     headers = {
-        "apikey": JPX_ANALYSIS_SUPABASE_KEY,
-        "Authorization": f"Bearer {JPX_ANALYSIS_SUPABASE_KEY}",
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
     }
     try:
         resp = requests.get(

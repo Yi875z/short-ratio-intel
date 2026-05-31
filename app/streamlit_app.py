@@ -837,6 +837,8 @@ def _render_institutional_flow_section(selected_date: str) -> None:
                     "エラー": diag["error"],
                 }
             )
+            st.caption("保存済みSecret名（値は含みません。ここに JPX_ANALYSIS_SUPABASE_URL / KEY があるか確認）:")
+            st.write(diag.get("保存済みSecret名") or "（取得不可）")
             return
         st.caption(f"{snap.week_date} 時点・単位:億円（+買い越し / −売り越し）")
         import pandas as pd

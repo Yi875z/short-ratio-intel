@@ -116,6 +116,50 @@ def fetch_investor_flow(target_date: str) -> InvestorFlowSnapshot | None:
     return InvestorFlowSnapshot(week_date=week_date, flows=flows)
 
 
+def diagnose_connection(target_date: str) -> dict:
+    """接続診断（秘密値は返さない）。設定有無・HTTPステータス・件数・エラーを返す。"""
+    info: dict = {
+        "url_set": bool(JPX_ANALYSIS_SUPABASE_URL),
+        "key_set": bool(JPX_ANALYSIS_SUPABASE_KEY),
+        "key_prefix": (JPX_ANALYSIS_SUPABASE_KEY[:3] + "…") if JPX_ANALYSIS_SUPABASE_KEY else "",
+        "url_host": "",
+        "status": None,
+        "rows": None,
+        "error": "",
+    }
+    if JPX_ANALYSIS_SUPABASE_URL:
+        info["url_host"] = JPX_ANALYSIS_SUPABASE_URL.rstrip("/").split("//")[-1]
+    if not info["url_set"] or not info["key_set"]:
+        info["error"] = "URLまたはKEYが未設定（Secretの名前・保存・Rebootを確認）"
+        return info
+    base = JPX_ANALYSIS_SUPABASE_URL.rstrip("/")
+    headers = {
+        "apikey": JPX_ANALYSIS_SUPABASE_KEY,
+        "Authorization": f"Bearer {JPX_ANALYSIS_SUPABASE_KEY}",
+    }
+    try:
+        resp = requests.get(
+            f"{base}/rest/v1/weekly_combined",
+            headers=headers,
+            params={
+                "select": "week_date",
+                "week_date": f"lte.{target_date}",
+                "order": "week_date.desc",
+                "limit": 1,
+            },
+            timeout=MARKET_NEWS_TIMEOUT_SECONDS,
+        )
+        info["status"] = resp.status_code
+        if resp.status_code == 200:
+            data = resp.json()
+            info["rows"] = len(data) if isinstance(data, list) else None
+        else:
+            info["error"] = f"HTTP {resp.status_code}: {resp.text[:200]}"
+    except requests.RequestException as exc:
+        info["error"] = f"{type(exc).__name__}: {exc}"
+    return info
+
+
 def build_institutional_flow_prompt_block(target_date: str) -> str:
     """プロンプトへ注入する投資主体別フローのブロックを返す。"""
     snap = fetch_investor_flow(target_date)

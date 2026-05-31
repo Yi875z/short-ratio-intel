@@ -31,7 +31,7 @@ from src.macro_context.event_calendar import (
     get_events_for_month,
 )
 from src.macro_context.house_view import load_house_view, store_house_view
-from src.macro_context.institutional_flow import fetch_investor_flow
+from src.macro_context.institutional_flow import diagnose_connection, fetch_investor_flow
 from src.ai_engine.prompt_builder import build_theme_transition_context_for_prompt
 from src.ai_engine.report_quality import (
     build_quality_comparison,
@@ -822,8 +822,20 @@ def _render_institutional_flow_section(selected_date: str) -> None:
     with st.expander("🏦 投資主体別フロー（週次・jpx-analysis連携）", expanded=False):
         if snap is None or not snap.flows:
             st.caption(
-                "未接続（JPX_ANALYSIS_SUPABASE_URL / KEY 未設定）または取得失敗。"
-                "設定すると、海外投資家・信託・個人等の現物/先物net（週次）を表示します。"
+                "未接続または取得失敗。下の接続診断で原因を確認してください"
+                "（秘密値は表示しません）。"
+            )
+            diag = diagnose_connection(selected_date)
+            st.write(
+                {
+                    "URL設定": diag["url_set"],
+                    "KEY設定": diag["key_set"],
+                    "接続先ホスト": diag["url_host"],
+                    "KEY先頭": diag["key_prefix"],
+                    "HTTPステータス": diag["status"],
+                    "取得件数": diag["rows"],
+                    "エラー": diag["error"],
+                }
             )
             return
         st.caption(f"{snap.week_date} 時点・単位:億円（+買い越し / −売り越し）")

@@ -125,10 +125,10 @@ def _computed_events_for_month(year: int, month: int) -> list[MarketEvent]:
             "権利落ち前後は配当再投資・先物ヘッジで需給が一過性に歪む。",
         ))
 
-    # 米雇用統計（NFP）= 原則第1金曜
+    # 米雇用統計（NFP）= 目安として原則第1金曜（BLSは月により第2金曜へずれるため要確認）
     events.append(MarketEvent(
-        "米雇用統計（NFP）", nth_weekday(year, month, 4, 1), "nfp", "US", "medium",
-        "米金利・ドル円の振れ要因。通過前後で為替経由の需給が動く。",
+        "米雇用統計（NFP・目安）", nth_weekday(year, month, 4, 1), "nfp", "US", "medium",
+        "米金利・ドル円の振れ要因。日付は目安（第1金曜）。月により第2金曜にずれるため実日程は要確認。",
     ))
 
     return events

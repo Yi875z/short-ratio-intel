@@ -136,6 +136,10 @@ class GeminiReportGenerator:
                 "市場イベント文脈の専用分析は未生成です。",
             )
             data.setdefault(
+                "institutional_flow_alignment",
+                "投資主体別フローの突合は未生成です。",
+            )
+            data.setdefault(
                 "investment_guardrails",
                 [
                     "本レポートは売買推奨ではなく、JPX日次フローを使った需給分析です。",
@@ -338,6 +342,9 @@ class GeminiReportGenerator:
             "",
             f"**🎯 Pro Intent（機関の真の狙い）**",
             f"{report.pro_intent}",
+            "",
+            f"**🏦 投資主体別フローとの整合性**",
+            f"{report.institutional_flow_alignment}",
             "",
             "---",
             "",

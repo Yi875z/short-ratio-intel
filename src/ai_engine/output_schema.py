@@ -136,6 +136,15 @@ class ReadingReport(BaseModel):
         description="機関投資家・ヘッジファンドの真の狙いと意図"
     )
 
+    institutional_flow_alignment: str = Field(
+        default="投資主体別フローの突合は未生成です。",
+        description=(
+            "Pro Intentと投資主体別フロー（週次・海外投資家/信託/個人等の現物・先物net）の"
+            "整合性。空売り比率の方向性売りが主体別フローと一致するか、しない場合は売りの主体"
+            "（ヘッジ/裁定/個人/自己売買）を推定。データ未接続時は未確認と明記"
+        )
+    )
+
     # 業種別分析（上位5 + 下位5）
     top_sectors_analysis: list[SectorAnalysis] = Field(
         description="空売り比率が高い注目5業種の分析"

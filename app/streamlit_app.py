@@ -31,6 +31,7 @@ from src.macro_context.event_calendar import (
     get_events_for_month,
 )
 from src.macro_context.house_view import load_house_view, store_house_view
+from src.macro_context.institutional_flow import fetch_investor_flow
 from src.ai_engine.prompt_builder import build_theme_transition_context_for_prompt
 from src.ai_engine.report_quality import (
     build_quality_comparison,
@@ -815,6 +816,34 @@ def _render_house_view_editor() -> None:
             st.rerun()
 
 
+def _render_institutional_flow_section(selected_date: str) -> None:
+    """投資主体別フロー（jpx-analysis 週次）の生データをレポートと並べて表示する。"""
+    snap = fetch_investor_flow(selected_date)
+    with st.expander("🏦 投資主体別フロー（週次・jpx-analysis連携）", expanded=False):
+        if snap is None or not snap.flows:
+            st.caption(
+                "未接続（JPX_ANALYSIS_SUPABASE_URL / KEY 未設定）または取得失敗。"
+                "設定すると、海外投資家・信託・個人等の現物/先物net（週次）を表示します。"
+            )
+            return
+        st.caption(f"{snap.week_date} 時点・単位:億円（+買い越し / −売り越し）")
+        import pandas as pd
+
+        df = pd.DataFrame(
+            [
+                {
+                    "投資主体": f.label,
+                    "現物net": round(f.spot_net),
+                    "先物net": round(f.futures_net_oku),
+                    "合算": round(f.combined_net),
+                    "ツインエンジン": "○" if f.is_twin_engine else "",
+                }
+                for f in snap.flows
+            ]
+        )
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+
 def _render_ai_report_tab(
     selected_date: str,
     today_summary: dict,
@@ -822,6 +851,7 @@ def _render_ai_report_tab(
     anomalies: list,
 ) -> None:
     _render_house_view_editor()
+    _render_institutional_flow_section(selected_date)
     manual_news = st.text_area(
         "AIレポート用 追加ニュース/市場メモ",
         key=f"ai_memo_{selected_date}",

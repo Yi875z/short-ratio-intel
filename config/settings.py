@@ -71,6 +71,12 @@ MARKET_NEWS_RSS_INCLUDE_SUMMARY: bool = _env_bool("MARKET_NEWS_RSS_INCLUDE_SUMMA
 # 最終更新からこの日数を超えたら鮮度警告を出す（自動実行で古い見解を使い続けない）
 HOUSE_VIEW_STALE_DAYS: int = int(os.getenv("HOUSE_VIEW_STALE_DAYS", "14"))
 
+# ---- 投資主体別フロー（姉妹プロジェクト jpx-analysis の別Supabaseを読む）----
+# jpx-analysis プロジェクトの Supabase URL と KEY（RLS無効の読み取り用）。
+# 未設定なら機関フロー突合はスキップ（本アプリは止めない）。秘密は Secrets で管理。
+JPX_ANALYSIS_SUPABASE_URL: str = os.getenv("JPX_ANALYSIS_SUPABASE_URL", "")
+JPX_ANALYSIS_SUPABASE_KEY: str = os.getenv("JPX_ANALYSIS_SUPABASE_KEY", "")
+
 # ---- 現在のマクロ背景（Step 0プロトコル） ----
 # ⚠️ 重要: 相場環境が変化したら必ずここを更新すること
 CURRENT_MACRO_CONTEXT: str = """

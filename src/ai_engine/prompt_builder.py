@@ -10,6 +10,7 @@ from src.macro_context.house_view import (
     build_house_view_prompt_block,
     effective_macro_context,
 )
+from src.macro_context.institutional_flow import build_institutional_flow_prompt_block
 from src.ai_engine.output_schema import ReadingReport
 from src.macro_context.context_builder import (
     build_market_context_bundle,
@@ -284,6 +285,7 @@ def build_user_prompt(
     effective_baseline, baseline_source = effective_macro_context()
     house_view_block = build_house_view_prompt_block()
     event_calendar_block = build_event_calendar_prompt_block(target_date)
+    institutional_flow_block = build_institutional_flow_prompt_block(target_date)
 
     market_context = build_market_context_bundle(
         target_date=target_date,
@@ -313,6 +315,8 @@ def build_user_prompt(
 {house_view_block}
 
 {event_calendar_block}
+
+{institutional_flow_block}
 
 【現在の支配的マクロ背景・市場テーマ判定】:
 {market_context.to_prompt_block()}
@@ -366,6 +370,7 @@ def build_user_prompt(
 出力では `investment_guardrails`、`confirmation_conditions`、`false_positive_risks`、`additional_data_to_check` に必ず投資判断ガードレールを記述してください。
 出力では `dominant_market_themes`、`theme_shift_analysis`、`theme_sector_alignment`、`unverified_market_data` に必ず市場テーマ判定を記述してください。
 出力では `event_calendar_context` に市場イベント・カレンダーと当日需給の関係を必ず記述してください。特に「その他（33業種外）」の急騰や価格規制なし比率の上昇は、当日近傍のMSCI入替・SQ・先物ロールがあれば機械的フローとして突合し、`other_category_impact` にもその旨を明記してください。
+出力では `institutional_flow_alignment` に、Pro Intent（機関の狙い）が【機関フロー（投資主体別・週次）】と整合するかを必ず記述してください。海外投資家の現物/先物のnet方向と、空売り比率の方向性売りが一致するか・しないかを明示し、一致しない場合は売りの主体（ヘッジ/裁定/個人/自己売買）を推定してください。データ未接続時は「投資主体別の裏付けは未確認」と明記してください。
 """
 
 

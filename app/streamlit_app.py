@@ -294,7 +294,11 @@ def _render_market_data_tab() -> None:
                 delta = q.change_text if q.ok else None
                 st.metric(label=q.label, value=q.value_text, delta=delta)
 
-    st.caption("出所: Yahoo Finance（yfinance, 直近終値ベース）。先物は時間外の参考値。")
+    as_of = next((q.as_of for q in ok_quotes if q.as_of), "")
+    st.caption(
+        f"出所: nikkei225jp.com（日次値・前日比）。{('データ日: ' + as_of) if as_of else ''}"
+        " 日経225先物はCME。"
+    )
 
     # NT倍率（日経平均 ÷ TOPIX）の推移
     st.markdown("#### NT倍率（日経平均 ÷ TOPIX）の推移")

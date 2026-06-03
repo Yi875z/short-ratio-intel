@@ -32,6 +32,7 @@ from src.macro_context.event_calendar import (
 )
 from src.macro_context.house_view import load_house_view, store_house_view
 from src.macro_context.institutional_flow import diagnose_connection, fetch_investor_flow
+from src.macro_context.market_quotes import fetch_nt_ratio_history, fetch_quotes
 from src.ai_engine.prompt_builder import build_theme_transition_context_for_prompt
 from src.ai_engine.report_quality import (
     build_quality_comparison,
@@ -142,11 +143,12 @@ def main() -> None:
         sectors_tab,
         breakdown_tab,
         theme_tab,
+        market_data_tab,
         calendar_tab,
         report_tab,
         history_tab,
     ) = st.tabs(
-        ["概要", "業種", "JPX内訳", "市場テーマ", "📅 カレンダー", "AIレポート", "履歴"]
+        ["概要", "業種", "JPX内訳", "市場テーマ", "🌐 市場データ", "📅 カレンダー", "AIレポート", "履歴"]
     )
 
     with overview_tab:
@@ -157,6 +159,8 @@ def main() -> None:
         _render_breakdown(today_summary)
     with theme_tab:
         _render_market_theme_tab(selected_date, today_summary)
+    with market_data_tab:
+        _render_market_data_tab()
     with calendar_tab:
         _render_calendar_tab(selected_date)
     with report_tab:
@@ -230,6 +234,85 @@ def _build_calendar_html(year: int, month: int, by_day: dict, highlight) -> str:
         parts.append("</tr>")
     parts.append("</table>")
     return "".join(parts)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_market_quotes():
+    """主要市場のライブ気配を5分キャッシュで取得（Streamlit Cloudのレート制限対策）。"""
+    return fetch_quotes()
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_nt_ratio_history(period: str = "6mo"):
+    """NT倍率（日経平均÷TOPIX）の推移を5分キャッシュで取得する。"""
+    return fetch_nt_ratio_history(period)
+
+
+def _render_market_data_tab() -> None:
+    """日経/TOPIX/ナスダック先物・ドル円・主要海外指標のライブ気配を表示する。"""
+    st.subheader("🌐 主要金融市場データ")
+    st.caption(
+        "AIレポート生成前にボタンで最新気配を確認できます。"
+        "取得した実測値はAIレポートにも自動で注入されます（5分キャッシュ）。"
+    )
+
+    if st.button("市場データを取得", type="primary", use_container_width=True):
+        _cached_market_quotes.clear()
+        _cached_nt_ratio_history.clear()
+
+    with st.spinner("市場データを取得中..."):
+        quotes = _cached_market_quotes()
+
+    ok_quotes = [q for q in quotes if q.ok]
+    if not ok_quotes:
+        st.error(
+            "市場データを取得できませんでした。時間をおいて再試行してください"
+            "（Yahoo Financeのレート制限の可能性）。"
+        )
+        with st.expander("取得状況（診断）", expanded=False):
+            st.dataframe(
+                pd.DataFrame(
+                    [{"銘柄": q.label, "ticker": q.ticker, "エラー": q.error} for q in quotes]
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+        return
+
+    # カテゴリ順を維持して metric を並べる
+    categories: list[str] = []
+    for q in quotes:
+        if q.category not in categories:
+            categories.append(q.category)
+
+    for category in categories:
+        cat_quotes = [q for q in quotes if q.category == category]
+        st.markdown(f"#### {category}")
+        cols = st.columns(min(len(cat_quotes), 4))
+        for i, q in enumerate(cat_quotes):
+            with cols[i % len(cols)]:
+                delta = q.change_text if q.ok else None
+                st.metric(label=q.label, value=q.value_text, delta=delta)
+
+    st.caption("出所: Yahoo Finance（yfinance, 直近終値ベース）。先物は時間外の参考値。")
+
+    # NT倍率（日経平均 ÷ TOPIX）の推移
+    st.markdown("#### NT倍率（日経平均 ÷ TOPIX）の推移")
+    nt_df = _cached_nt_ratio_history("6mo")
+    if nt_df is None or nt_df.empty:
+        st.caption("NT倍率データを取得できませんでした（時間をおいて再試行してください）。")
+    else:
+        latest = float(nt_df["nt_ratio"].iloc[-1])
+        prev = float(nt_df["nt_ratio"].iloc[-2]) if len(nt_df) >= 2 else None
+        delta = f"{latest - prev:+.3f}" if prev is not None else None
+        st.metric("現在のNT倍率", f"{latest:.2f}", delta=delta)
+        fig = px.line(nt_df, x="date", y="nt_ratio", title="NT倍率の推移（直近6ヶ月）")
+        fig.update_layout(yaxis_title="NT倍率", xaxis_title="", height=320)
+        st.plotly_chart(fig, use_container_width=True)
+        st.caption(
+            "NT倍率＝日経平均÷TOPIX。高いほど値がさ/グロース優位、低いほど内需/バリュー優位。"
+            "出所: nikkei225jp.com（実日経平均・実TOPIXの日次値）。"
+        )
 
 
 def _render_calendar_tab(selected_date: str) -> None:

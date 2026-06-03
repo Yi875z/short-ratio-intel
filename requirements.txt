@@ -9,6 +9,7 @@ loguru==0.7.2
 # Data
 pandas==2.2.0
 numpy==1.26.4
+yfinance==0.2.40  # 主要市場（先物・為替・指数・金利）のライブ気配取得。キー不要・公開Yahoo Finance
 
 # Database
 sqlalchemy==2.0.27

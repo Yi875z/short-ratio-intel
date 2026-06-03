@@ -11,6 +11,7 @@ from src.macro_context.house_view import (
     effective_macro_context,
 )
 from src.macro_context.institutional_flow import build_institutional_flow_prompt_block
+from src.macro_context.market_quotes import build_market_quotes_prompt_block
 from src.ai_engine.output_schema import ReadingReport
 from src.macro_context.context_builder import (
     build_market_context_bundle,
@@ -286,6 +287,7 @@ def build_user_prompt(
     house_view_block = build_house_view_prompt_block()
     event_calendar_block = build_event_calendar_prompt_block(target_date)
     institutional_flow_block = build_institutional_flow_prompt_block(target_date)
+    live_market_block = build_market_quotes_prompt_block()
 
     market_context = build_market_context_bundle(
         target_date=target_date,
@@ -317,6 +319,8 @@ def build_user_prompt(
 {event_calendar_block}
 
 {institutional_flow_block}
+
+{live_market_block}
 
 【現在の支配的マクロ背景・市場テーマ判定】:
 {market_context.to_prompt_block()}
@@ -359,7 +363,7 @@ def build_user_prompt(
   - 新規シグナルは「翌営業日の再現性確認が必要」と明記する。
   - ヘッジ・裁定・ETF/REIT由来のフローを、方向性売りと混同しない。
   - 市場テーマは、根拠あり・推測・未確認を分けて扱う。
-  - 未取得のVIX、WTI、SOX、GEX、米金利、ドル円などを、実測済みデータとして断定しない。
+  - 上部の「ライブ市場気配（実測）」に載っている値（日経/TOPIX/ナスダック先物・ドル円・米10年/30年金利・VIX・WTI・SOX等）は実測として扱ってよい。そこに無い指標やGEXは実測済みデータとして断定しない。
 
 上記データを NEO真金融グランドマスター として分析し、
 「空売り比率 完全解読レポート」を指定のJSONフォーマットで出力してください。

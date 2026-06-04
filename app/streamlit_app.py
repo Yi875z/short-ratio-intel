@@ -238,14 +238,33 @@ def _build_calendar_html(year: int, month: int, by_day: dict, highlight) -> str:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _cached_market_quotes():
-    """主要市場のライブ気配を5分キャッシュで取得（Streamlit Cloudのレート制限対策）。"""
-    return fetch_quotes()
+    """主要市場のライブ気配を5分キャッシュで取得（Streamlit Cloudのレート制限対策）。
+
+    戻り値: (取得時刻JST文字列, quotesリスト)。
+    """
+    from datetime import datetime, timedelta, timezone
+
+    jst = timezone(timedelta(hours=9))
+    fetched_at = datetime.now(jst).strftime("%Y-%m-%d %H:%M")
+    return fetched_at, fetch_quotes()
 
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _cached_nt_ratio_history(period: str = "6mo"):
     """NT倍率（日経平均÷TOPIX）の推移を5分キャッシュで取得する。"""
     return fetch_nt_ratio_history(period)
+
+
+def _short_as_of(as_of: str) -> str:
+    """カード表示用にデータ時点を短縮（準リアルタイムは時刻、日次は M/D）。"""
+    if not as_of:
+        return ""
+    if " " in as_of:  # "06-04 22:41"（準リアルタイム）→ 時刻
+        return as_of.split(" ", 1)[1]
+    parts = as_of.split("-")  # "2026-06-04" → "6/4"
+    if len(parts) == 3:
+        return f"{int(parts[1])}/{int(parts[2])}"
+    return as_of
 
 
 def _render_market_data_tab() -> None:
@@ -261,13 +280,15 @@ def _render_market_data_tab() -> None:
         _cached_nt_ratio_history.clear()
 
     with st.spinner("市場データを取得中..."):
-        quotes = _cached_market_quotes()
+        fetched_at, quotes = _cached_market_quotes()
+
+    st.caption(f"🕒 取得時刻: {fetched_at}（JST）／日経先物・ドル円は約10分遅れの準リアルタイム")
 
     ok_quotes = [q for q in quotes if q.ok]
     if not ok_quotes:
         st.error(
             "市場データを取得できませんでした。時間をおいて再試行してください"
-            "（Yahoo Financeのレート制限の可能性）。"
+            "（データ提供元の一時的な不調の可能性）。"
         )
         with st.expander("取得状況（診断）", expanded=False):
             st.dataframe(
@@ -292,12 +313,12 @@ def _render_market_data_tab() -> None:
         for i, q in enumerate(cat_quotes):
             with cols[i % len(cols)]:
                 delta = q.change_text if q.ok else None
-                st.metric(label=q.label, value=q.value_text, delta=delta)
+                label = f"{q.label}　🕒{_short_as_of(q.as_of)}" if q.as_of else q.label
+                st.metric(label=label, value=q.value_text, delta=delta)
 
-    as_of = next((q.as_of for q in ok_quotes if q.as_of), "")
     st.caption(
-        f"出所: nikkei225jp.com（日次値・前日比）。{('データ日: ' + as_of) if as_of else ''}"
-        " 日経225先物はCME。"
+        "出所: nikkei225jp.com。各カードの🕒はそのデータ時点（時刻=準リアルタイム、"
+        "日付=その営業日の終値）。日経先物は大取・CME、前日比は前日終値（清算値）比。"
     )
 
     # NT倍率（日経平均 ÷ TOPIX）の推移

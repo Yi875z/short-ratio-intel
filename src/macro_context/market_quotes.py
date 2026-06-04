@@ -21,8 +21,9 @@ _SERIES_PATH = "/_data/_nfsWEB/HS_DATA_DAY/S{code}.json"
 _HTTP_HEADERS = {"User-Agent": "Mozilla/5.0", "Referer": SITE_BASE + "/"}
 
 # (ラベル, シリーズコード, カテゴリ, 単位)。コードは nikkei225jp.com の日次JSON。
+# 日経225先物は日次確定足だとザラ場中1営業日遅れるため、準リアルタイムのティック
+# (_TICK_INSTRUMENTS)で別途取得する。ここには含めない。
 MARKET_INSTRUMENTS: list[tuple[str, int, str, str]] = [
-    ("日経225先物(CME)", 233, "日本株", "pt"),
     ("日経平均(現物)", 111, "日本株", "pt"),
     ("TOPIX", 112, "日本株", "pt"),
     ("ナスダック100", 214, "米国株", "pt"),
@@ -41,6 +42,25 @@ MARKET_INSTRUMENTS: list[tuple[str, int, str, str]] = [
 _NT_NIKKEI_CODE = 111
 _NT_TOPIX_CODE = 112
 _NT_PERIOD_DAYS = {"1mo": 31, "3mo": 93, "6mo": 186, "1y": 372, "2y": 744}
+
+# 準リアルタイム（約10分遅れ）ティック。[code, ms, value] のログで各コードの最終値が現値。
+# 日経先物2系統(136/191)とドル円(511)を near-real-time 化する。
+_TICK_PATH = "/_data/_nfsWEB/hs_data/hs_tick2.json"
+# (tickコード, ラベル, カテゴリ, 単位, 前日終値の日次シリーズコード)
+_TICK_INSTRUMENTS = [
+    (136, "日経225先物(大取)", "日本株", "pt", 233),
+    (191, "日経225先物(CME円建)", "日本株", "pt", 233),
+    (511, "ドル円", "為替", "円", 511),
+]
+
+
+def _jst_date(ms: float):
+    """unix ms を JST の日付に変換（サイトの足は15:00 UTC=翌00:00 JSTスタンプ）。"""
+    return (_dt.datetime.utcfromtimestamp(ms / 1000) + _dt.timedelta(hours=9)).date()
+
+
+def _jst_datetime(ms: float):
+    return _dt.datetime.utcfromtimestamp(ms / 1000) + _dt.timedelta(hours=9)
 
 
 @dataclass(frozen=True)
@@ -94,7 +114,7 @@ def _quote_from_instrument(item) -> Quote:
             return Quote(label, str(code), category, unit, error="no data")
         last = arr[-1]
         value = float(last[1])
-        as_of = _dt.datetime.utcfromtimestamp(last[0] / 1000).date().isoformat()
+        as_of = _jst_date(last[0]).isoformat()
         change = change_pct = None
         if len(arr) >= 2 and arr[-2][1]:
             prev = float(arr[-2][1])
@@ -115,15 +135,87 @@ def _quote_from_instrument(item) -> Quote:
         return Quote(label, str(code), category, unit, error=str(exc))
 
 
+def _load_tick_latest() -> dict:
+    """hs_tick2.json を読み、{code: (value, ms)} で各コードの最新値を返す。失敗時 {}。"""
+    import json
+    import re
+    import urllib.request as request
+
+    try:
+        req = request.Request(SITE_BASE + _TICK_PATH, headers=_HTTP_HEADERS)
+        raw = request.urlopen(req, timeout=15).read().decode("utf-8", "replace")
+        rows = json.loads(re.search(r"=\s*(\[.*\])\s*;?\s*$", raw, re.S).group(1))
+        latest = {}
+        for r in rows:
+            if len(r) >= 3 and isinstance(r[0], int):
+                latest[r[0]] = (r[2], r[1])
+        return latest
+    except Exception:
+        return {}
+
+
+def _fetch_realtime_quotes():
+    """準リアルタイム（約10分遅れ）の日経先物・ドル円を hs_tick2.json から取得する。
+
+    戻り値: (futures_quotes, fx_override) — 先物は新規カード、ドル円は日次値の上書き用。
+    """
+    latest = _load_tick_latest()
+    if not latest:
+        return [], None
+
+    # 前日終値（日次シリーズの最終確定値）を必要なコードだけ取得
+    prev_close = {}
+    for code, _label, _cat, _unit, prev_code in _TICK_INSTRUMENTS:
+        if code in latest and prev_code not in prev_close:
+            try:
+                arr = _load_series(prev_code)
+                prev_close[prev_code] = float(arr[-1][1]) if arr else None
+            except Exception:
+                prev_close[prev_code] = None
+
+    futures, fx_override = [], None
+    for code, label, category, unit, prev_code in _TICK_INSTRUMENTS:
+        if code not in latest:
+            continue
+        value, ms = float(latest[code][0]), latest[code][1]
+        prev = prev_close.get(prev_code)
+        change = (value - prev) if prev else None
+        change_pct = (change / prev * 100.0) if (change is not None and prev) else None
+        q = Quote(
+            label=label,
+            ticker=str(code),
+            category=category,
+            unit=unit,
+            value=value,
+            change=change,
+            change_pct=change_pct,
+            ok=True,
+            as_of=_jst_datetime(ms).strftime("%m-%d %H:%M"),
+        )
+        if code == 511:
+            fx_override = q
+        else:
+            futures.append(q)
+    return futures, fx_override
+
+
 def fetch_quotes(instruments=None) -> list[Quote]:
-    """全銘柄のライブ気配を取得する。失敗は ok=False で返し、例外送出しない。"""
+    """全銘柄のライブ気配を取得する。失敗は ok=False で返し、例外送出しない。
+
+    日経先物2系統(大取/CME)とドル円は準リアルタイム(約10分遅れ)、それ以外は日次終値。
+    """
     instruments = instruments or MARKET_INSTRUMENTS
     try:
         with ThreadPoolExecutor(max_workers=8) as executor:
-            return list(executor.map(_quote_from_instrument, instruments))
+            daily = list(executor.map(_quote_from_instrument, instruments))
     except Exception:
-        # スレッド生成に失敗した場合は逐次でフォールバック
-        return [_quote_from_instrument(item) for item in instruments]
+        daily = [_quote_from_instrument(item) for item in instruments]
+
+    futures, fx_override = _fetch_realtime_quotes()
+    if fx_override is not None:
+        daily = [fx_override if q.ticker == "511" else q for q in daily]
+    # 先物カードは日本株の先頭に置く
+    return futures + daily
 
 
 def _fetch_site_nikkei_topix():

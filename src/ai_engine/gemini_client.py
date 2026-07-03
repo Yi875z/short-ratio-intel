@@ -88,10 +88,15 @@ class GeminiReportGenerator:
                 return report_obj, markdown
 
             except Exception as e:
-                wait = 2 ** attempt
+                # 無料枠は 5リクエスト/分・入力250Kトークン/分。429 を秒単位で
+                # リトライすると同じ分内で再衝突して全滅するため、レート枠が
+                # リセットされる 60秒超まで待つ（2026-06-26〜07-02 の連続失敗の教訓）。
+                message = str(e)
+                is_quota = "429" in message or "RESOURCE_EXHAUSTED" in message or "quota" in message.lower()
+                wait = 65 if is_quota else 2 ** attempt
                 logger.error(f"Gemini APIエラー (attempt {attempt+1}): {e}")
                 if attempt < self.MAX_RETRIES - 1:
-                    logger.info(f"{wait}秒後にリトライ...")
+                    logger.info(f"{wait}秒後にリトライ...{'（クォータ枠リセット待ち）' if is_quota else ''}")
                     time.sleep(wait)
                 else:
                     raise

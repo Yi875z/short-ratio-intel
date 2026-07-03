@@ -182,6 +182,21 @@ def _cal_html_attr(s: str) -> str:
     return _cal_html_text(s).replace('"', "&quot;")
 
 
+def _chip_colors(e) -> tuple[str, str]:
+    """イベントチップの (背景色, 文字色)。指数イベントはフェーズ別、他は地域別。"""
+    if e.phase == "passive_trade":
+        return "#fdebd0", "#b9770e"   # 橙: パッシブ実売買日（需給インパクト最大）
+    if e.phase == "effective":
+        return "#d5f5e3", "#1e8449"   # 緑: 指数発効日
+    if e.phase in ("announcement", "base_date", "watch"):
+        return "#eaecee", "#566573"   # 灰: 発表・基準・ウォッチ
+    if e.category in ("sq", "rollover"):
+        return "#ebdef0", "#7d3c98"   # 紫: SQ・先物ロール
+    if e.region == "JP":
+        return "#fdecea", "#c0392b"   # 赤: 日本マクロ
+    return "#e8f0fb", "#1f5fa8"       # 青: 米国マクロ
+
+
 def _build_calendar_html(year: int, month: int, by_day: dict, highlight) -> str:
     """月間カレンダーのHTMLを生成する（日曜始まり・イベントチップ付き）。"""
     import calendar as _cal
@@ -214,16 +229,16 @@ def _build_calendar_html(year: int, month: int, by_day: dict, highlight) -> str:
             border = "2px solid #f1c40f" if is_anchor else "1px solid #ddd"
             chips = []
             for e in by_day.get(day, []):
-                jp = e.region == "JP"
-                bg = "#fdecea" if jp else "#e8f0fb"
-                fg = "#c0392b" if jp else "#1f5fa8"
+                bg, fg = _chip_colors(e)
                 star = "★" if e.importance == "high" else ""
+                phase = f"[{e.phase_label()}]" if e.phase != "event" else ""
                 name = e.name if len(e.name) <= 16 else e.name[:15] + "…"
+                tooltip = f"{phase} {e.name} — {e.note}".strip()
                 chips.append(
-                    f"<div title=\"{_cal_html_attr(e.name + ' — ' + e.note)}\" "
+                    f"<div title=\"{_cal_html_attr(tooltip)}\" "
                     f"style='font-size:10px;margin:1px 0;padding:1px 3px;border-radius:3px;"
                     f"background:{bg};color:{fg};white-space:nowrap;overflow:hidden;"
-                    f"text-overflow:ellipsis;'>{star}{_cal_html_text(name)}</div>"
+                    f"text-overflow:ellipsis;'>{star}{_cal_html_text(phase + name)}</div>"
                 )
             parts.append(
                 f"<td style='border:{border};height:92px;vertical-align:top;padding:2px;"
@@ -346,7 +361,9 @@ def _render_calendar_tab(selected_date: str) -> None:
 
     st.subheader("📅 市場イベント・カレンダー（月間）")
     st.caption(
-        "SQ・MSCI入替・先物ロール・配当落ち・米雇用統計・FOMC・日銀会合などの予定。"
+        "SQ・先物ロール・指数リバランス（MSCI/FTSE/日経平均/TOPIX/JPX日経400）・配当落ち・"
+        "FOMC・日銀会合/短観・米CPI/PPI/雇用統計/PCE/GDP/小売/ISM・日本CPIなどの予定"
+        "（2026年は公式確定日）。指数イベントは発表→実売買→発効のフェーズ別に表示。"
         "AIレポートにも同じカレンダー情報が反映されます。"
     )
 
@@ -384,15 +401,17 @@ def _render_calendar_tab(selected_date: str) -> None:
 
     st.markdown(_build_calendar_html(year, month, by_day, anchor), unsafe_allow_html=True)
     st.caption(
-        "🟥 日本(JP) ／ 🟦 米国(US)　｜　★=重要度high　｜　"
+        "🟧 実売買（パッシブ需給の集中日） ／ 🟩 発効 ／ ⬜ 発表・基準・ウォッチ ／ "
+        "🟪 SQ・ロール ／ 🟥 日本マクロ ／ 🟦 米国マクロ　｜　★=重要度high　｜　"
         "黄枠=分析日　｜　チップにカーソルを乗せると詳細"
     )
 
     if events:
         with st.expander("この月のイベント一覧（テキスト）", expanded=False):
             for e in events:
+                phase = f"・{e.phase_label()}" if e.phase != "event" else ""
                 st.markdown(
-                    f"- **{e.event_date.isoformat()}**（{e.region}・"
+                    f"- **{e.event_date.isoformat()}**（{e.region}{phase}・"
                     f"{'★high' if e.importance == 'high' else e.importance}） "
                     f"{e.name} — {e.note}"
                 )
@@ -419,10 +438,13 @@ def _render_sidebar_event_calendar(target_date: str) -> None:
             st.caption("対象日前後に主要な予定イベントは検出されず。")
             return
         for e in events:
+            if e.importance == "low":
+                continue
             mark = "🔴" if e.importance == "high" else "▫️"
+            phase = f"・{e.phase_label()}" if e.phase != "event" else ""
             st.markdown(
                 f"{mark} **{e.event_date.isoformat()}**"
-                f"（{e.relation_label(target)}・{e.region}）  \n{e.name}",
+                f"（{e.relation_label(target)}・{e.region}{phase}）  \n{e.name}",
                 help=e.note,
             )
 

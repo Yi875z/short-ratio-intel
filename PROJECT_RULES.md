@@ -75,7 +75,7 @@
 - **技術スタック**: Python 3.12（Streamlit Community Cloud 固定。新しすぎる Python は固定依存の wheel が無くビルド失敗する）/
   pandas 2.2.0 / SQLAlchemy 2.0.27 / psycopg2-binary / pydantic 2.6.0 / loguru / feedparser / Streamlit / Gemini API / pytest
 - **起動コマンド**: `streamlit run app/streamlit_app.py`（本番は Streamlit Community Cloud・bcrypt ログイン付き。main へ push すると自動再デプロイ）
-- **テストコマンド**: `pytest`（基準: 全63件パス。2026-07-03 実測 7秒）
+- **テストコマンド**: `pytest`（基準: 全69件パス。2026-07-04 実測 7秒）
 - **DBスキーマの正**: `src/storage/db.py` の `get_engine()` が `DATABASE_URL` ありで Supabase(PostgreSQL)、無しでローカル SQLite に切替。
   スキーマ定義の正本ファイルは未確認（`src/storage/` 配下を参照）
 - **データソースと取得条件**:

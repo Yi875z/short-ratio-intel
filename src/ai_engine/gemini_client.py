@@ -176,6 +176,8 @@ class GeminiReportGenerator:
                     "主体別売買動向、信用残、個別銘柄のニュース。",
                 ],
             )
+            data.setdefault("executive_summary", "")
+            data.setdefault("regime", "")
             data.setdefault("dominant_market_themes", [])
             data.setdefault(
                 "theme_shift_analysis",
@@ -237,6 +239,17 @@ class GeminiReportGenerator:
             "",
             "---",
             "",
+        ]
+
+        if report.executive_summary or report.regime:
+            lines += ["## 🧭 本日の結論"]
+            if report.executive_summary:
+                lines += [report.executive_summary, ""]
+            if report.regime:
+                lines += [f"**レジーム判定**: {report.regime}", ""]
+            lines += ["---", ""]
+
+        lines += [
             f"## 🌍 現在の支配的マクロ背景",
             f"{report.current_macro_context}",
             "",
@@ -269,6 +282,7 @@ class GeminiReportGenerator:
                     f"### {theme.theme_name}",
                     f"- **重要度**: {theme.importance}",
                     f"- **状態**: {theme.status}",
+                    f"- **フロー区分**: {theme.flow_classification}",
                     f"- **影響経路**: {', '.join(theme.impact_channels)}",
                     f"- **関連業種**: {', '.join(theme.related_sectors)}",
                     f"- **空売り比率との整合性**: {theme.short_ratio_alignment}",

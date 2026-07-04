@@ -21,6 +21,8 @@ EXTERNAL_KNOWLEDGE_FILES = {
     "options_gex": "03_Options_and_GEX_Master.md",
     "global_macro": "04_Global_Macro_Dynamics.md",
     "quant_psych": "05_Quant_Tech_Psychology.md",
+    "user_rules": "06_USER_INVESTMENT_OPERATING_RULES.md",
+    "past_cases": "07_PAST_CASES_AND_REVIEW.md",
 }
 
 
@@ -116,6 +118,8 @@ def load_effective_knowledge() -> dict[str, str]:
 
     effective["project_protocol"] = external.get("project_protocol", "")
     effective["market_preview_spec"] = external.get("market_preview_spec", "")
+    effective["user_rules"] = external.get("user_rules", "")
+    effective["past_cases"] = external.get("past_cases", "")
     return effective
 
 

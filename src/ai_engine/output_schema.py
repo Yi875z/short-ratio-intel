@@ -32,10 +32,28 @@ class DominantMarketTheme(BaseModel):
     related_sectors: list[str]
     short_ratio_alignment: str
     caveat: str              # 未確認データ・反証条件・過剰断定回避の注記
+    flow_classification: str = Field(
+        default="Unconfirmed",
+        description=(
+            "資金フロー区分: Confirmed（公式データで確認済み）| Price-Implied（価格・出来高から示唆）| "
+            "Scheduled（SQ・指数リバランス等の予定された機械的フロー）| Narrative（ニュース・期待先行）| "
+            "Unconfirmed（未確認）"
+        ),
+    )
 
 
 class ReadingReport(BaseModel):
     """AIが生成する完全解読レポートの構造"""
+
+    # ★ 結論とレジーム（レポート冒頭に表示）
+    executive_summary: str = Field(
+        default="",
+        description="レポート全体の結論を3行以内で要約。何が起きたか・需給の主因・翌営業日の焦点",
+    )
+    regime: str = Field(
+        default="",
+        description='当日の市場体制。「リスクオン」「リスクオフ」「レンジ・様子見」のいずれか1つだけ',
+    )
 
     # ★ Step 0必須項目（過去年パターン汚染防止）
     current_macro_context: str = Field(
@@ -44,7 +62,10 @@ class ReadingReport(BaseModel):
 
     # 全体サマリー
     market_overall_summary: str = Field(
-        description="東証全体の空売り比率の現状と意味。日次売買代金フローとして解釈し、売り残高とは表現しない"
+        description=(
+            "東証全体の空売り比率の現状と意味。日次売買代金フローとして解釈し、売り残高とは表現しない。"
+            "「事実:」「解釈:」「推測:」ラベルで確度を分離する"
+        )
     )
 
     jpx_short_selling_breakdown_analysis: str = Field(

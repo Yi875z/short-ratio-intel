@@ -4,8 +4,11 @@ Gemini API へのプロンプトを動的に構築するモジュール
 import json
 from config.settings import CURRENT_MACRO_CONTEXT, MARKET_NEWS_AUTO_FETCH
 from config.signal_thresholds import SIGNAL_THRESHOLDS
-from src.knowledge.loader import load_effective_knowledge
-from src.macro_context.event_calendar import build_event_calendar_prompt_block
+from src.knowledge.loader import load_effective_knowledge, load_external_knowledge
+from src.macro_context.event_calendar import (
+    build_event_calendar_prompt_block,
+    get_events_for_date,
+)
 from src.macro_context.house_view import (
     build_house_view_prompt_block,
     effective_macro_context,
@@ -60,8 +63,8 @@ def build_system_prompt() -> str:
 
 ## ナレッジベース
 
-### Project Operating Protocol（最上位運用ルール）
-{_clip(knowledge.get('project_protocol', ''), 12000)}
+### Project Operating Protocol（最上位運用ルール・分析ルール抜粋）
+{_extract_protocol_digest(knowledge.get('project_protocol', ''))}
 
 ---
 
@@ -90,6 +93,11 @@ def build_system_prompt() -> str:
 
 ---
 
+### User Investment Operating Rules（ユーザー固有・投資分析運用ルール）
+{_clip(knowledge.get('user_rules', ''), 9000)}
+
+---
+
 ## 出力フォーマット
 
 **必ず以下のJSONスキーマに従って出力すること。他の形式は不可。**
@@ -114,6 +122,20 @@ Markdownのコードブロック（```）は使わず、純粋なJSONのみを�
 - `theme_shift_analysis` には、前提テーマが変わりつつあるかを条件付きで書く
 - `theme_sector_alignment` には、主要テーマと業種別空売り比率が整合するか、整合しないかを明記する
 - `unverified_market_data` には、数値未取得・未確認の市場データを入れる
+- `executive_summary` には、レポート全体の結論を3行以内で書く（何が起きたか・需給の主因・翌営業日の焦点）
+- `regime` には「リスクオン」「リスクオフ」「レンジ・様子見」のいずれか1つだけを書く
+- `dominant_market_themes` の各テーマの `flow_classification` には資金フロー区分を1つ記す:
+  Confirmed（JPX・財務省・CFTC等の公式データで確認済み）/ Price-Implied（価格・出来高・相対強度から示唆）/
+  Scheduled（SQ・指数リバランス・配当等の予定された機械的フロー）/ Narrative（ニュース・期待先行）/ Unconfirmed（未確認）。
+  ETF価格の上昇・相対強度だけで資金流入と断定せず、その場合は Price-Implied に留める
+
+## 事実・解釈・推測のラベル分離（運用プロトコル準拠）
+
+- 長文の分析フィールド（market_overall_summary / jpx_short_selling_breakdown_analysis / price_restriction_signal /
+  other_category_impact / event_calendar_context / weekly_trend_analysis / theme_shift_analysis /
+  institutional_flow_alignment / pro_intent）では、文の先頭に「事実:」「解釈:」「推測:」のラベルを付けて確度を分離する
+- 「事実:」は入力データ・報道ベースで確認できる内容のみ。「解釈:」はデータから合理的に読める意味。
+  「推測:」は可能性の指摘であり、反証条件をセットで書く
 
 ## JPX公式内訳の解釈ルール
 
@@ -286,6 +308,7 @@ def build_user_prompt(
     effective_baseline, baseline_source = effective_macro_context()
     house_view_block = build_house_view_prompt_block()
     event_calendar_block = build_event_calendar_prompt_block(target_date)
+    sq_week_case_block = _build_sq_week_case_block(target_date)
     institutional_flow_block = build_institutional_flow_prompt_block(target_date)
     live_market_block = build_market_quotes_prompt_block()
 
@@ -317,6 +340,8 @@ def build_user_prompt(
 {house_view_block}
 
 {event_calendar_block}
+
+{sq_week_case_block}
 
 {institutional_flow_block}
 
@@ -367,6 +392,7 @@ def build_user_prompt(
 
 上記データを NEO真金融グランドマスター として分析し、
 「空売り比率 完全解読レポート」を指定のJSONフォーマットで出力してください。
+出力では `executive_summary` に3行以内の結論、`regime` に「リスクオン」「リスクオフ」「レンジ・様子見」のいずれか1つを必ず記述してください。
 特に、価格規制あり主導なのか、価格規制なし主導なのか、その他（33業種外）が市場全体を歪めているかを必ず明記してください。
 機械判定シグナルは結論の補助材料として使い、過剰に断定せず、反証条件も含めてください。
 シグナル履歴は、単日ノイズと継続フローを区別するために使ってください。
@@ -421,3 +447,63 @@ def _clip(text: str, max_chars: int) -> str:
     if len(text) <= max_chars:
         return text
     return text[:max_chars] + "\n\n[...以下、長文のため省略...]"
+
+
+# 00プロトコルのうち、本アプリのレポート生成に効く分析ルールの見出しキーワード。
+# モード定義・ChatGPT Project運用（前半）はアプリでは不要なため抽出しない。
+_PROTOCOL_DIGEST_KEYWORDS = [
+    "事実・推測・シナリオの分離",
+    "JPX分析の禁止・推奨表現",
+    "投資主体別の時間差ルール",
+    "J-NET判定ルール",
+    "GEX・オプション分析ルール",
+    "Global Macro分析ルール",
+    "テクニカル・クオンツ分析ルール",
+    "資金フロー・四半期テーマ転換監視ルール",
+    "心理・資金管理ルール",
+]
+
+
+def _extract_protocol_digest(text: str, max_chars: int = 12000) -> str:
+    """00プロトコルから分析ルールのセクションだけを抽出する。
+
+    旧実装は先頭からの単純クリップで、19,000字超の新版00では後半の
+    分析ルール（事実/推測分離・資金フロー区分等）が切り捨てられていた。
+    見出し構成が変わって1つも抽出できない場合は従来のクリップに戻す。
+    """
+    if not text:
+        return "[ファイル未配置]"
+    sections: list[str] = []
+    keep = False
+    buf: list[str] = []
+    for line in text.splitlines():
+        if line.startswith("## "):
+            if keep and buf:
+                sections.append("\n".join(buf).strip())
+            buf = [line]
+            keep = any(kw in line for kw in _PROTOCOL_DIGEST_KEYWORDS)
+        elif keep:
+            buf.append(line)
+    if keep and buf:
+        sections.append("\n".join(buf).strip())
+    if not sections:
+        return _clip(text, max_chars)
+    return _clip("\n\n".join(sections), max_chars)
+
+
+def _build_sq_week_case_block(target_date: str) -> str:
+    """SQ・MSQ週に限り、過去事例・再発防止ルール（Vault 07）を注入する。
+
+    通常日はプロンプト肥大とGeminiクォータ消費を避けるため注入しない。
+    """
+    events = get_events_for_date(target_date, before_days=2, after_days=5)
+    if not any(e.category in ("sq", "rollover") for e in events):
+        return ""
+    past_cases = load_external_knowledge("past_cases")
+    if not past_cases:
+        return ""
+    return (
+        "【SQ・MSQ週の過去事例・再発防止ルール】:\n"
+        "対象日はSQ・MSQ週の近傍です。以下の過去事例の教訓を解釈に反映してください。\n"
+        + _clip(past_cases, 9000)
+    )

@@ -449,6 +449,60 @@ def _render_sidebar_event_calendar(target_date: str) -> None:
             )
 
 
+@st.cache_data(ttl=600, show_spinner=False)
+def _cached_knowledge_meta():
+    """配信ナレッジ（Supabase knowledge_documents）のメタ情報を10分キャッシュで取得。"""
+    from src.storage.db import get_knowledge_document_meta
+
+    return get_knowledge_document_meta()
+
+
+def _render_sidebar_knowledge_freshness() -> None:
+    """配信ナレッジの更新日時を表示し、ローカル原本と差分があれば警告する。
+
+    2026-07-04に「00プロトコルが旧版のまま配信されていた」事故が見つかったため、
+    原本更新→再アップロード忘れを画面で検知できるようにする。
+    """
+    from datetime import timedelta, timezone
+
+    from config.settings import EXTERNAL_KNOWLEDGE_DIR
+    from src.knowledge.loader import EXTERNAL_KNOWLEDGE_FILES
+
+    meta = _cached_knowledge_meta()
+    if not meta:
+        return
+    jst = timezone(timedelta(hours=9))
+    with st.expander("🧠 ナレッジ鮮度（AIレポートの知識）", expanded=False):
+        stale_keys = []
+        for m in meta:
+            if str(m["key"]).startswith("__"):  # __house_view__ 等の予約キーは対象外
+                continue
+            updated = m["updated_at"]
+            label = (
+                updated.replace(tzinfo=timezone.utc).astimezone(jst).strftime("%m/%d %H:%M")
+                if updated is not None
+                else "-"
+            )
+            mark = ""
+            filename = EXTERNAL_KNOWLEDGE_FILES.get(m["key"], "")
+            local_path = EXTERNAL_KNOWLEDGE_DIR / filename if filename else None
+            if local_path is not None and local_path.exists():
+                try:
+                    if len(local_path.read_text(encoding="utf-8")) != m["chars"]:
+                        mark = "　⚠️ 原本と差分"
+                        stale_keys.append(m["key"])
+                except OSError:
+                    pass
+            st.caption(f"{m['key']}: {label} JST・{m['chars']:,}字{mark}")
+        if stale_keys:
+            st.warning(
+                "ローカル原本と配信ナレッジに差分があります。"
+                "`python -m scripts.upload_knowledge_to_supabase` で再アップロードしてください。"
+            )
+        else:
+            st.caption("※ ⚠️が無ければ配信ナレッジは原本と同期しています（原本があるPCのみ判定）。")
+
+
 def _sidebar() -> str | None:
     with st.sidebar:
         st.header("操作")
@@ -501,6 +555,8 @@ def _sidebar() -> str | None:
         if selected_date:
             st.divider()
             _render_sidebar_event_calendar(selected_date)
+
+        _render_sidebar_knowledge_freshness()
 
     return selected_date
 

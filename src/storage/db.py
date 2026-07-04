@@ -624,6 +624,30 @@ def get_knowledge_document_keys() -> list[str]:
         return []
 
 
+def get_knowledge_document_meta() -> list[dict]:
+    """保存済みナレッジの一覧（key・ファイル名・文字数・更新日時UTC）を返す。
+
+    ナレッジ鮮度の表示用。DB未接続時は空リストを返し本処理を止めない。
+    """
+    try:
+        engine = get_db_engine()
+        with Session(engine) as session:
+            rows = session.execute(
+                select(KnowledgeDocument).order_by(KnowledgeDocument.key)
+            ).scalars().all()
+            return [
+                {
+                    "key": row.key,
+                    "filename": row.filename,
+                    "chars": len(row.content or ""),
+                    "updated_at": row.updated_at,
+                }
+                for row in rows
+            ]
+    except Exception:  # noqa: BLE001
+        return []
+
+
 # ハウスビュー（運用者の常設の相場観）は knowledge_documents を予約キーで再利用する。
 # 専用テーブルを足さないので Supabase 側のマイグレーションは不要。
 HOUSE_VIEW_KEY = "__house_view__"

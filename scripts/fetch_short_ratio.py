@@ -132,8 +132,13 @@ def _step_report(
     weekly_df,
     anomalies: list,
     auto_fetch_news: bool,
-) -> int:
-    """ステップ3: Gemini AIレポート生成 → DB 保存。生成文字数を返す。"""
+):
+    """ステップ3: Gemini AIレポート生成 → DB 保存。
+
+    Returns:
+        (生成文字数, ReadingReport オブジェクト) のタプル。
+        通知に結論・レジームを載せるため report_obj も返す。
+    """
     logger.info(f"[3/3] Gemini AIレポート生成 (model={GEMINI_MODEL})")
     generator = GeminiReportGenerator()
     report_obj, markdown = generator.generate_report(
@@ -151,7 +156,39 @@ def _step_report(
         model_used=GEMINI_MODEL,
     )
     logger.info(f"AIレポート保存完了: {len(markdown)}文字")
-    return len(markdown)
+    return len(markdown), report_obj
+
+
+def _format_report_highlights(report_obj) -> str:
+    """AIレポートの結論を通知用の短いテキストに整形する。
+
+    report_obj が None（--no-report 時）でも空文字を返して壊れない。
+    毎日19時に自動生成されるレポートの要点を、アプリを開かずに通知だけで
+    掴めるようにするための抜粋。
+    """
+    if report_obj is None:
+        return ""
+
+    lines: list[str] = []
+    regime = (getattr(report_obj, "regime", "") or "").strip()
+    if regime:
+        lines.append(f"・レジーム: {regime}")
+
+    summary = (getattr(report_obj, "executive_summary", "") or "").strip()
+    if summary:
+        lines.append("・結論:")
+        for row in summary.splitlines():
+            row = row.strip()
+            if row:
+                lines.append(f"    {row}")
+
+    new_signal = (getattr(report_obj, "new_signal_summary", "") or "").strip()
+    if new_signal and not new_signal.startswith("新規シグナルの専用分析は未生成"):
+        head = [row.strip() for row in new_signal.splitlines() if row.strip()][:2]
+        if head:
+            lines.append("・新規シグナル: " + " / ".join(head))
+
+    return "\n".join(lines)
 
 
 def _notify_slack(text: str) -> None:
@@ -183,6 +220,7 @@ def run(args: argparse.Namespace) -> int:
 
     theme_count = 0
     report_chars = 0
+    report_obj = None
 
     if args.no_report and args.no_theme:
         logger.info("レポート・テーマともにスキップ指定。取得のみで終了します。")
@@ -194,10 +232,11 @@ def run(args: argparse.Namespace) -> int:
             theme_count = _step_theme(report_date, today_summary, auto_fetch_news)
 
         if not args.no_report:
-            report_chars = _step_report(
+            report_chars, report_obj = _step_report(
                 report_date, today_summary, weekly_df, anomalies, auto_fetch_news
             )
 
+    highlights = _format_report_highlights(report_obj)
     summary = (
         f"✅ 空売り比率パイプライン完了 ({report_date})\n"
         f"・取得: sector={fetch_result.get('saved_sector')} / "
@@ -206,6 +245,8 @@ def run(args: argparse.Namespace) -> int:
         f"・AIレポート: {report_chars}文字 ({GEMINI_MODEL})\n"
         f"・DB: {backend}"
     )
+    if highlights:
+        summary += "\n" + highlights
     logger.success(summary)
     _notify_slack(summary)
     return 0

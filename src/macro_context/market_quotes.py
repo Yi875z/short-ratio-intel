@@ -54,6 +54,12 @@ _TICK_INSTRUMENTS = [
 ]
 
 
+# 日経VI（日経平均ボラティリティ指数）。nikkei225jp.com は日経VIの日次系列を
+# 持たない（600番台コードを実値照合したが一致なし）ため、CLAUDE.md 第一候補の
+# stock-marketdata.com から取得する。同ページの日次テーブルと公表値を複数日照合済み。
+_NIKKEI_VI_URL = "https://stock-marketdata.com/vi.html"
+
+
 def _jst_date(ms: float):
     """unix ms を JST の日付に変換（サイトの足は15:00 UTC=翌00:00 JSTスタンプ）。"""
     return (_dt.datetime.utcfromtimestamp(ms / 1000) + _dt.timedelta(hours=9)).date()
@@ -199,10 +205,77 @@ def _fetch_realtime_quotes():
     return futures, fx_override
 
 
+def _parse_smd_number(text) -> float | None:
+    """stock-marketdata のセル文字列を float に変換。空・非数値は None。"""
+    if text is None:
+        return None
+    cleaned = text.replace(",", "").replace("%", "").strip()
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+def _fetch_nikkei_vi_quote() -> Quote:
+    """日経VIを stock-marketdata.com の日次テーブルから取得する。失敗時 ok=False。
+
+    テーブルは最新行が data-y="2"、列 data-x=0:日付 / 1:終値 / 2:前日比 / 3:前日比%。
+    日本市場のオプション性リスク（恐怖度）指標で、米VIXと対で解釈できる。
+    """
+    import re
+    import urllib.request as request
+
+    label, category, unit = "日経VI", "金利・リスク", ""
+    try:
+        req = request.Request(_NIKKEI_VI_URL, headers={"User-Agent": "Mozilla/5.0"})
+        html = request.urlopen(req, timeout=15).read().decode("utf-8", "replace")
+        cells = {
+            int(m.group(1)): m.group(2).strip()
+            for m in re.finditer(
+                r'data-x="(\d+)"\s+data-y="2"[^>]*>([^<]*)</td>', html
+            )
+        }
+        value = _parse_smd_number(cells.get(1))
+        if value is None:
+            return Quote(label, "NKVI", category, unit, error="no data")
+        as_of = cells.get(0, "").replace("/", "-").strip()
+        return Quote(
+            label=label,
+            ticker="NKVI",
+            category=category,
+            unit=unit,
+            value=value,
+            change=_parse_smd_number(cells.get(2)),
+            change_pct=_parse_smd_number(cells.get(3)),
+            ok=True,
+            as_of=as_of,
+        )
+    except Exception as exc:
+        return Quote(label, "NKVI", category, unit, error=str(exc))
+
+
+def _insert_nikkei_vi(daily: list[Quote], vi: Quote) -> list[Quote]:
+    """日経VIをVIX（ticker=621）の直後へ差し込み、金利・リスク群にまとめる。
+
+    VIXが無い場合は末尾に追加する（レンダリングのカテゴリ連続性を保つ）。
+    """
+    out: list[Quote] = []
+    inserted = False
+    for q in daily:
+        out.append(q)
+        if q.ticker == "621":
+            out.append(vi)
+            inserted = True
+    if not inserted:
+        out.append(vi)
+    return out
+
+
 def fetch_quotes(instruments=None) -> list[Quote]:
     """全銘柄のライブ気配を取得する。失敗は ok=False で返し、例外送出しない。
 
     日経先物2系統(大取/CME)とドル円は準リアルタイム(約10分遅れ)、それ以外は日次終値。
+    日経VIのみ別ソース(stock-marketdata.com)から取得しVIXの隣へ配置する。
     """
     instruments = instruments or MARKET_INSTRUMENTS
     try:
@@ -214,6 +287,8 @@ def fetch_quotes(instruments=None) -> list[Quote]:
     futures, fx_override = _fetch_realtime_quotes()
     if fx_override is not None:
         daily = [fx_override if q.ticker == "511" else q for q in daily]
+
+    daily = _insert_nikkei_vi(daily, _fetch_nikkei_vi_quote())
     # 先物カードは日本株の先頭に置く
     return futures + daily
 

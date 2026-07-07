@@ -332,8 +332,8 @@ def _render_market_data_tab() -> None:
                 st.metric(label=label, value=q.value_text, delta=delta)
 
     st.caption(
-        "出所: nikkei225jp.com。各カードの🕒はそのデータ時点（時刻=準リアルタイム、"
-        "日付=その営業日の終値）。日経先物は大取・CME、前日比は前日終値（清算値）比。"
+        "出所: nikkei225jp.com（日経VIのみ stock-marketdata.com）。各カードの🕒はそのデータ時点"
+        "（時刻=準リアルタイム、日付=その営業日の終値）。日経先物は大取・CME、前日比は前日終値（清算値）比。"
     )
 
     # NT倍率（日経平均 ÷ TOPIX）の推移

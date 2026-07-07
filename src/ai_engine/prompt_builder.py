@@ -2,6 +2,7 @@
 Gemini API へのプロンプトを動的に構築するモジュール
 """
 import json
+from loguru import logger
 from config.settings import CURRENT_MACRO_CONTEXT, MARKET_NEWS_AUTO_FETCH
 from config.signal_thresholds import SIGNAL_THRESHOLDS
 from src.knowledge.loader import load_effective_knowledge, load_external_knowledge
@@ -31,6 +32,12 @@ from src.storage.db import (
 )
 
 
+# 主要ナレッジ4種（global_macro / jpx_micro / options_gex / quant_psych）を
+# システムプロンプトへ埋め込むときの1ファイル上限。Vault増補でプロンプトが
+# 無自覚に肥大し、Gemini入力上限(250K TPM)やlost-in-the-middleを招くのを防ぐ。
+_KNOWLEDGE_CLIP_CHARS = 12000
+
+
 def build_system_prompt() -> str:
     """
     NEOグランドマスター人格 + ナレッジ + 出力スキーマを組み合わせた
@@ -42,7 +49,7 @@ def build_system_prompt() -> str:
         ReadingReport.model_json_schema(), ensure_ascii=False, indent=2
     )
 
-    return f"""
+    prompt = f"""
 あなたは「NEO真 金融グランドマスター 👑 The Omni-Market Sovereign」です。
 日本および米国の金融市場における高度な投資分析のエキスパートとして行動してください。
 
@@ -74,22 +81,22 @@ def build_system_prompt() -> str:
 ---
 
 ### Global Macro Dynamics（マクロ・為替・時間軸）
-{knowledge.get('global_macro', '[ファイル未配置]')}
+{_clip(knowledge.get('global_macro', ''), _KNOWLEDGE_CLIP_CHARS)}
 
 ---
 
 ### JPX Micro Flows（日本株・需給分析）
-{knowledge.get('jpx_micro', '[ファイル未配置]')}
+{_clip(knowledge.get('jpx_micro', ''), _KNOWLEDGE_CLIP_CHARS)}
 
 ---
 
 ### Options & GEX Master（オプション・ガンマ解析）
-{knowledge.get('options_gex', '[ファイル未配置]')}
+{_clip(knowledge.get('options_gex', ''), _KNOWLEDGE_CLIP_CHARS)}
 
 ---
 
 ### Quant & Psychology（クオンツ・心理学）
-{knowledge.get('quant_psych', '[ファイル未配置]')}
+{_clip(knowledge.get('quant_psych', ''), _KNOWLEDGE_CLIP_CHARS)}
 
 ---
 
@@ -173,6 +180,8 @@ Markdownのコードブロック（```）は使わず、純粋なJSONのみを�
 - ニュース見出しに具体的数値（為替水準・金利/利回り・指数値）が含まれる場合は「報道ベース」と明示して引用してよく、`unverified_market_data` には入れない。
 - 見出しに数値が無い指標のみ `unverified_market_data` に列挙する。報道で水準が判明しているものを未確認扱いしない。
 """
+    logger.info(f"プロンプト規模: system={len(prompt):,}字")
+    return prompt
 
 
 def build_user_prompt(
@@ -334,7 +343,7 @@ def build_user_prompt(
             f"{quality_feedback}"
         )
 
-    return f"""
+    prompt = f"""
 【分析対象日】: {target_date}
 
 {house_view_block}
@@ -402,6 +411,8 @@ def build_user_prompt(
 出力では `event_calendar_context` に市場イベント・カレンダーと当日需給の関係を必ず記述してください。特に「その他（33業種外）」の急騰や価格規制なし比率の上昇は、当日近傍のMSCI入替・SQ・先物ロールがあれば機械的フローとして突合し、`other_category_impact` にもその旨を明記してください。
 出力では `institutional_flow_alignment` に、Pro Intent（機関の狙い）が【機関フロー（投資主体別・週次）】と整合するかを必ず記述してください。海外投資家の現物/先物のnet方向と、空売り比率の方向性売りが一致するか・しないかを明示し、一致しない場合は売りの主体（ヘッジ/裁定/個人/自己売買）を推定してください。データ未接続時は「投資主体別の裏付けは未確認」と明記してください。
 """
+    logger.info(f"プロンプト規模: user={len(prompt):,}字")
+    return prompt
 
 
 def build_theme_transition_context_for_prompt(

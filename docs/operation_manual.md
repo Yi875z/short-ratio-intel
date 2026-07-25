@@ -9,7 +9,7 @@
 JPXの空売り集計データと業種別空売り比率を取得・分析し、現在の市場テーマを踏まえた Gemini AI レポートを生成する Streamlit アプリ。**2026-05-30 にクラウド化が完了**し、PCに依存せず動く本番環境と、従来どおりの手元開発環境の2モードで動作する。
 
 - **データソース**: JPX公式空売り集計PDF、stock-marketdata.com（フォールバック）。いずれも公開スクレイピングで、認証キーは不要。
-- **AI**: Gemini API。既定モデルは `gemini-3.5-flash`（`GEMINI_MODEL` で変更可）
+- **AI**: Gemini API。既定モデルは `gemini-3.6-flash`（`GEMINI_MODEL` で変更可。2026-07-25 に 3.5 から移行）
 - **任意ニュース取得**: Tavily API（市場テーマ判定・AIレポート生成時）
 - **データ保存先**: 環境変数 `DATABASE_URL` があれば Supabase(PostgreSQL)、無ければローカル SQLite に自動で切り替わる（`src/storage/db.py` の `get_engine()`）
 
@@ -173,7 +173,15 @@ taskkill /PID <該当PID> /F
 
 ### Geminiのクォータ（429 / limit）
 
-`gemini-3.5-flash` は無料枠が1日20リクエスト（20 RPD）。レポート再生成を何度も回すと枯渇しうる（1回の生成で最大3回リトライ＝3コール）。枯渇時は同じモデルを叩き直さず24時間待つ。
+Flash 系は無料枠が1日20リクエスト（20 RPD）。レポート再生成を何度も回すと枯渇しうる（1回の生成で最大3回リトライ＝3コール）。
+
+この 20 RPD は `GenerateRequestsPerDayPerProjectPerModel-FreeTier`、つまり **モデル単位** の枠。
+枯渇しても別モデルは無傷の別枠を持つので、**24時間待つ必要はなく `GEMINI_MODEL` を切り替えれば即復旧**する
+（既定 `gemini-3.6-flash` ⇄ 退避先 `gemini-3.5-flash`。両方とも本番キーで動作確認済み）。
+切り替え先は必ず1回実呼び出しして 200 が返るか確認すること（新モデルは Free Tier が limit=0 のことがある）。
+クォータのリセットは太平洋時間の深夜＝**JST 16:00 が日付境界**。
+
+なお `.github/workflows/daily_fetch.yml` の `GEMINI_MODEL` は `config/settings.py` の既定より優先されるため、モデル移行時は両方直すこと。
 
 ---
 

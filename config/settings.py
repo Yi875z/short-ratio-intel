@@ -53,6 +53,17 @@ ANOMALY_DOD_THRESHOLD: float = 3.0    # 前日比±3pt超でアラート
 ANOMALY_ZSCORE_THRESHOLD: float = 2.0  # Zスコア±2超でアラート
 HISTORY_DAYS_FOR_ZSCORE: int = 30     # Zスコア計算に使う過去日数
 
+# ---- 米国ショートフロー（FINRA CNMS）----
+# 判定は絶対閾値（50%等）ではなく、銘柄自身の過去分布に対する相対評価で行う。
+# 平常時45〜55%の銘柄と25〜35%の銘柄では、同じ52%でも意味が全く異なるため。
+US_ZSCORE_WINDOW_SHORT: int = int(os.getenv("US_ZSCORE_WINDOW_SHORT", "20"))
+US_ZSCORE_WINDOW_LONG: int = int(os.getenv("US_ZSCORE_WINDOW_LONG", "60"))
+# 窓幅に対して必要な最低サンプル比率。下回れば判定せず None を返す（欠損は補間しない）
+US_MIN_SAMPLE_COVERAGE: float = float(os.getenv("US_MIN_SAMPLE_COVERAGE", "0.8"))
+US_ZSCORE_ALERT_THRESHOLD: float = 2.0    # |z20| がこれを超えたら異常
+US_ZSCORE_EXTREME_THRESHOLD: float = 3.0  # |z20| がこれを超えたら極端
+US_BACKFILL_DAYS: int = int(os.getenv("US_BACKFILL_DAYS", "250"))  # 初回バックフィルの営業日数
+
 # ---- 市場テーマ判定 ----
 MARKET_THEME_MAX_ITEMS: int = int(os.getenv("MARKET_THEME_MAX_ITEMS", "3"))
 MARKET_THEME_MIN_SCORE: float = float(os.getenv("MARKET_THEME_MIN_SCORE", "2.0"))

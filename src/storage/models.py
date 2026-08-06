@@ -158,3 +158,78 @@ class KnowledgeDocument(Base):
 
     def __repr__(self) -> str:
         return f"<KnowledgeDocument key={self.key} len={len(self.content)}>"
+
+
+# ==================================================================
+# 米国ショートフロー（US-P1）
+#
+# 日本側テーブル（業種別・売買代金JPYベース）とは粒度も単位も異なるため、
+# 意図的に別テーブルとして分離している。両者を跨いだ加減乗除は行わない。
+# ==================================================================
+
+class UsShortVolumeDaily(Base):
+    """米国個別銘柄の日次ショートボリューム（FINRA CNMS 等）
+
+    ⚠️ これは「フロー」であって空売り残高ではない。残高は UsShortInterest（US-P3）で扱う。
+    ⚠️ short_ratio_pct は必ず同一ソース内の short_volume / reported_total_volume で算出する。
+       consolidated volume（UsMarketDaily.market_volume）を分母にしてはならない。
+    """
+
+    __tablename__ = "us_short_volume_daily"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    date = Column(String(10), nullable=False, index=True)        # YYYY-MM-DD
+    ticker = Column(String(16), nullable=False, index=True)      # FINRA表記（BRK/B 等）
+    region = Column(String(4), nullable=False, default="US")
+    source = Column(String(32), nullable=False)                  # FINRA_CNMS
+    venue_scope = Column(String(16), nullable=False)             # OFF_EXCHANGE
+
+    # raw列（取得生値）: FINRA は小数を含むため Float で受ける
+    short_volume = Column(Float, nullable=True)
+    short_exempt_volume = Column(Float, nullable=True)
+    reported_total_volume = Column(Float, nullable=True)         # ★このソースの報告分出来高
+
+    # calculated列（計算値）
+    short_ratio_pct = Column(Float, nullable=True)
+
+    market_codes = Column(String(32), nullable=True)             # "B,Q,N" 等
+    ingested_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("date", "ticker", "source", name="uq_us_svd_date_ticker_source"),
+    )
+
+    def __repr__(self) -> str:
+        ratio = f"{self.short_ratio_pct:.1f}%" if self.short_ratio_pct is not None else "N/A"
+        return f"<UsShortVolumeDaily date={self.date} ticker={self.ticker} ratio={ratio}>"
+
+
+class UsMarketDaily(Base):
+    """米国個別銘柄の日次OHLCV（Yahoo Finance chart API）
+
+    ⚠️ market_volume は consolidated volume（市場全体の出来高）。
+       ショート比率の分母に使ってはならない。用途は騰落率・終値位置・出来高比のみ。
+    """
+
+    __tablename__ = "us_market_daily"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    date = Column(String(10), nullable=False, index=True)
+    ticker = Column(String(16), nullable=False, index=True)
+
+    open = Column(Float, nullable=True)
+    high = Column(Float, nullable=True)
+    low = Column(Float, nullable=True)
+    close = Column(Float, nullable=True)
+    adj_close = Column(Float, nullable=True)
+    market_volume = Column(Float, nullable=True)
+
+    ingested_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("date", "ticker", name="uq_us_market_date_ticker"),
+    )
+
+    def __repr__(self) -> str:
+        close = f"{self.close:.2f}" if self.close is not None else "N/A"
+        return f"<UsMarketDaily date={self.date} ticker={self.ticker} close={close}>"

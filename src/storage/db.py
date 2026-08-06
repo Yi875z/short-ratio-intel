@@ -25,6 +25,8 @@ from src.storage.models import (
     MarketShortRatioDaily,
     MarketThemeSnapshot,
     ShortRatioDaily,
+    UsMarketDaily,
+    UsShortVolumeDaily,
 )
 
 
@@ -673,3 +675,236 @@ def get_house_view() -> Optional[tuple[str, datetime]]:
     except Exception as e:  # noqa: BLE001 取得失敗で本処理を止めない
         logger.warning(f"ハウスビューDB取得に失敗: {e}")
         return None
+
+
+# ==================================================================
+# 米国ショートフロー（US-P1）
+#
+# 日本側の関数群とは完全に独立している。日米のデータを跨いだ計算は行わない
+# （JP=業種別・売買代金JPY / US=銘柄別・株数。単位も粒度も異なる）。
+# ==================================================================
+
+def upsert_us_short_volume_records(records: list[dict]) -> int:
+    """米国ショートボリュームをUPSERTする。
+
+    レコードは finra_client.build_record() 形式の dict。
+    欠落フィールドは None のまま保存する（前日値のコピーや補間は行わない）。
+    同一 (date, ticker, source) の再投入で行数は増えない（冪等）。
+    """
+    if not records:
+        return 0
+
+    engine = get_db_engine()
+    saved = 0
+
+    with Session(engine) as session:
+        for r in records:
+            date_value = r.get("Date")
+            ticker = r.get("Ticker")
+            source = r.get("Source") or "UNKNOWN"
+            if not date_value or not ticker:
+                logger.warning(f"米国ショートボリュームの必須項目が欠落: {r}")
+                continue
+
+            existing = session.execute(
+                select(UsShortVolumeDaily).where(
+                    UsShortVolumeDaily.date == date_value,
+                    UsShortVolumeDaily.ticker == ticker,
+                    UsShortVolumeDaily.source == source,
+                )
+            ).scalar_one_or_none()
+
+            if existing:
+                existing.region = r.get("Region") or "US"
+                existing.venue_scope = r.get("VenueScope") or ""
+                existing.short_volume = r.get("ShortVolume")
+                existing.short_exempt_volume = r.get("ShortExemptVolume")
+                existing.reported_total_volume = r.get("ReportedTotalVolume")
+                existing.short_ratio_pct = r.get("ShortRatioPct")
+                existing.market_codes = r.get("MarketCodes")
+                existing.ingested_at = datetime.utcnow()
+            else:
+                session.add(UsShortVolumeDaily(
+                    date=date_value,
+                    ticker=ticker,
+                    region=r.get("Region") or "US",
+                    source=source,
+                    venue_scope=r.get("VenueScope") or "",
+                    short_volume=r.get("ShortVolume"),
+                    short_exempt_volume=r.get("ShortExemptVolume"),
+                    reported_total_volume=r.get("ReportedTotalVolume"),
+                    short_ratio_pct=r.get("ShortRatioPct"),
+                    market_codes=r.get("MarketCodes"),
+                ))
+            saved += 1
+
+        session.commit()
+
+    logger.info(f"米国ショートボリューム {saved}件を保存しました")
+    return saved
+
+
+def get_us_short_volume_df(
+    date: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    ticker: Optional[str] = None,
+    tickers: Optional[list[str]] = None,
+    source: Optional[str] = None,
+) -> pd.DataFrame:
+    """条件指定で米国ショートボリュームを DataFrame で返す。"""
+    engine = get_db_engine()
+
+    with Session(engine) as session:
+        stmt = select(UsShortVolumeDaily).order_by(
+            UsShortVolumeDaily.date, UsShortVolumeDaily.ticker
+        )
+
+        if date:
+            stmt = stmt.where(UsShortVolumeDaily.date == date)
+        if from_date:
+            stmt = stmt.where(UsShortVolumeDaily.date >= from_date)
+        if to_date:
+            stmt = stmt.where(UsShortVolumeDaily.date <= to_date)
+        if ticker:
+            stmt = stmt.where(UsShortVolumeDaily.ticker == ticker)
+        if tickers:
+            stmt = stmt.where(UsShortVolumeDaily.ticker.in_(tickers))
+        if source:
+            stmt = stmt.where(UsShortVolumeDaily.source == source)
+
+        rows = session.execute(stmt).scalars().all()
+
+    if not rows:
+        return pd.DataFrame()
+
+    return pd.DataFrame([{
+        "date": r.date,
+        "ticker": r.ticker,
+        "source": r.source,
+        "venue_scope": r.venue_scope,
+        "short_volume": r.short_volume,
+        "short_exempt_volume": r.short_exempt_volume,
+        "reported_total_volume": r.reported_total_volume,
+        "short_ratio_pct": r.short_ratio_pct,
+        "market_codes": r.market_codes,
+    } for r in rows])
+
+
+def get_us_short_volume_latest_date(source: Optional[str] = None) -> Optional[str]:
+    """保存済み米国ショートボリュームの最新日付を返す。"""
+    engine = get_db_engine()
+    with Session(engine) as session:
+        stmt = select(UsShortVolumeDaily.date)
+        if source:
+            stmt = stmt.where(UsShortVolumeDaily.source == source)
+        stmt = stmt.order_by(desc(UsShortVolumeDaily.date)).limit(1)
+        return session.execute(stmt).scalar_one_or_none()
+
+
+def get_saved_us_short_volume_dates() -> list[str]:
+    """保存済み米国ショートボリュームの日付一覧を新しい順で返す。"""
+    engine = get_db_engine()
+    with Session(engine) as session:
+        rows = session.execute(
+            select(UsShortVolumeDaily.date)
+            .distinct()
+            .order_by(desc(UsShortVolumeDaily.date))
+        ).scalars().all()
+    return list(rows)
+
+
+def upsert_us_market_daily_records(records: list[dict]) -> int:
+    """米国日足OHLCVをUPSERTする（us_price_client.build_price_record 形式）。"""
+    if not records:
+        return 0
+
+    engine = get_db_engine()
+    saved = 0
+
+    with Session(engine) as session:
+        for r in records:
+            date_value = r.get("Date")
+            ticker = r.get("Ticker")
+            if not date_value or not ticker:
+                logger.warning(f"米国日足の必須項目が欠落: {r}")
+                continue
+
+            existing = session.execute(
+                select(UsMarketDaily).where(
+                    UsMarketDaily.date == date_value,
+                    UsMarketDaily.ticker == ticker,
+                )
+            ).scalar_one_or_none()
+
+            if existing:
+                existing.open = r.get("Open")
+                existing.high = r.get("High")
+                existing.low = r.get("Low")
+                existing.close = r.get("Close")
+                existing.adj_close = r.get("AdjClose")
+                existing.market_volume = r.get("MarketVolume")
+                existing.ingested_at = datetime.utcnow()
+            else:
+                session.add(UsMarketDaily(
+                    date=date_value,
+                    ticker=ticker,
+                    open=r.get("Open"),
+                    high=r.get("High"),
+                    low=r.get("Low"),
+                    close=r.get("Close"),
+                    adj_close=r.get("AdjClose"),
+                    market_volume=r.get("MarketVolume"),
+                ))
+            saved += 1
+
+        session.commit()
+
+    logger.info(f"米国日足 {saved}件を保存しました")
+    return saved
+
+
+def get_us_market_daily_df(
+    date: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    ticker: Optional[str] = None,
+    tickers: Optional[list[str]] = None,
+) -> pd.DataFrame:
+    """条件指定で米国日足OHLCVを DataFrame で返す。
+
+    market_volume は consolidated volume。ショート比率の分母に使わないこと。
+    """
+    engine = get_db_engine()
+
+    with Session(engine) as session:
+        stmt = select(UsMarketDaily).order_by(
+            UsMarketDaily.date, UsMarketDaily.ticker
+        )
+
+        if date:
+            stmt = stmt.where(UsMarketDaily.date == date)
+        if from_date:
+            stmt = stmt.where(UsMarketDaily.date >= from_date)
+        if to_date:
+            stmt = stmt.where(UsMarketDaily.date <= to_date)
+        if ticker:
+            stmt = stmt.where(UsMarketDaily.ticker == ticker)
+        if tickers:
+            stmt = stmt.where(UsMarketDaily.ticker.in_(tickers))
+
+        rows = session.execute(stmt).scalars().all()
+
+    if not rows:
+        return pd.DataFrame()
+
+    return pd.DataFrame([{
+        "date": r.date,
+        "ticker": r.ticker,
+        "open": r.open,
+        "high": r.high,
+        "low": r.low,
+        "close": r.close,
+        "adj_close": r.adj_close,
+        "market_volume": r.market_volume,
+    } for r in rows])

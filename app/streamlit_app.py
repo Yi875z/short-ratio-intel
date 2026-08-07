@@ -73,6 +73,10 @@ from src.storage.db import (
     upsert_market_short_ratio_records,
     upsert_short_ratio_records,
 )
+# 米国ショートフロー（US-P2）。日本側の描画とは独立しており、
+# データが無くてもこのタブ内で完結して案内を出す。
+from src.storage.db import get_us_market_daily_df, get_us_short_volume_df
+from src.report.us_daily_report import build_daily_report
 
 
 AUTO_FETCH_DAYS = 5
@@ -147,8 +151,10 @@ def main() -> None:
         calendar_tab,
         report_tab,
         history_tab,
+        us_flow_tab,
     ) = st.tabs(
-        ["概要", "業種", "JPX内訳", "市場テーマ", "🌐 市場データ", "📅 カレンダー", "AIレポート", "履歴"]
+        ["概要", "業種", "JPX内訳", "市場テーマ", "🌐 市場データ", "📅 カレンダー", "AIレポート", "履歴",
+         "🇺🇸 米国ショート"]
     )
 
     with overview_tab:
@@ -167,6 +173,8 @@ def main() -> None:
         _render_ai_report_tab(selected_date, today_summary, weekly_df, anomalies)
     with history_tab:
         _render_history_tab(selected_date)
+    with us_flow_tab:
+        _render_us_flow_tab()
 
 
 def _shift_ym(year: int, month: int, delta: int) -> tuple[int, int]:
@@ -1522,6 +1530,151 @@ def _apply_style() -> None:
         """,
         unsafe_allow_html=True,
     )
+
+
+# ==================================================================
+# 米国ショートフロー（US-P2）
+#
+# 日本側の描画には一切干渉しない。データ未投入でもこのタブ内で
+# 案内を出して終わる（アプリ全体を止めない）。
+# ==================================================================
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _cached_us_flow_frames():
+    """米国ショートボリュームと日足を10分キャッシュで読む。"""
+    return get_us_short_volume_df(), get_us_market_daily_df()
+
+
+def _render_us_flow_tab() -> None:
+    """米国個別株のショートフロー（FINRA報告分）を表示する。"""
+    st.subheader("🇺🇸 米国ショートフロー（FINRA CNMS）")
+    st.caption(
+        "半導体20銘柄＋SMH/SOXX/QQQ/SPY の日次ショートボリューム。"
+        "毎営業日 08:37 JST に自動取得します。"
+    )
+
+    try:
+        short_df, price_df = _cached_us_flow_frames()
+    except Exception as e:  # noqa: BLE001 米国データの不調で日本側の画面を巻き込まない
+        st.warning(f"米国データの読み込みに失敗しました: {e}")
+        return
+
+    if short_df is None or short_df.empty:
+        st.info(
+            "米国ショートフローのデータがまだありません。\n\n"
+            "初回は `python -m scripts.backfill_us_short_flow --days 250` で"
+            "履歴を投入してください（Zスコアの算出に過去60営業日が必要です）。"
+        )
+        return
+
+    dates = sorted(short_df["date"].unique(), reverse=True)
+    selected = st.selectbox("対象営業日", dates, index=0, key="us_flow_date")
+
+    report = build_daily_report(selected, short_df, price_df)
+    coverage = report["coverage"]
+
+    st.markdown(
+        f"**取得銘柄 {coverage['present']} / {coverage['expected']}**"
+        + (f"　欠損: {', '.join(coverage['missing'])}" if coverage["missing"] else "")
+    )
+    st.caption(
+        "⚠️ FINRA報告分（Off-Exchange）のみで米国市場全体ではありません。"
+        "日次ショートボリュームはフローであり、空売り残高（Short Interest）ではありません。"
+    )
+
+    # --- バスケット ---
+    if report["baskets"]:
+        st.markdown("#### バスケット（ボリューム加重）")
+        cols = st.columns(len(report["baskets"]))
+        for col, b in zip(cols, report["baskets"]):
+            z20 = "N/A" if b["z20"] is None else f"{b['z20']:+.2f}"
+            dod = None if b["dod_change"] is None else f"{b['dod_change']:+.2f}pt"
+            col.metric(
+                label=f"{b['basket']}（z20 {z20}）",
+                value=f"{b['ratio']:.2f}%",
+                delta=dod,
+            )
+
+    # --- ETF乖離 ---
+    if report["divergences"]:
+        st.markdown("#### ETF乖離（テーマヘッジか銘柄選別か）")
+        for d in report["divergences"]:
+            div = "N/A" if d["divergence"] is None else f"{d['divergence']:+.2f}"
+            st.markdown(f"- **{d['etf']}** divergence `{div}` … {d['interpretation']}")
+
+    # --- アラート ---
+    st.markdown("#### アラート（|z20| ≧ 2.0）")
+    alerts = pd.DataFrame(report["alerts"])
+    if alerts.empty:
+        st.info("該当なし。")
+    else:
+        st.dataframe(
+            _us_display_frame(alerts),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    # --- 全銘柄 ---
+    with st.expander("全銘柄を表示", expanded=False):
+        st.dataframe(
+            _us_display_frame(report["metrics"]),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    # --- 銘柄別の推移 ---
+    st.markdown("#### 銘柄別の推移")
+    tickers = sorted(short_df["ticker"].unique())
+    default_index = tickers.index("NVDA") if "NVDA" in tickers else 0
+    ticker = st.selectbox("銘柄", tickers, index=default_index, key="us_flow_ticker")
+
+    history = short_df[short_df["ticker"] == ticker].sort_values("date")
+    if history.empty:
+        st.info("推移データがありません。")
+    else:
+        fig = px.line(
+            history,
+            x="date",
+            y="short_ratio_pct",
+            title=f"{ticker} FINRA ショート比率の推移",
+            labels={"date": "日付", "short_ratio_pct": "ショート比率(%)"},
+        )
+        fig.update_layout(height=320, margin=dict(l=10, r=10, t=48, b=10))
+        st.plotly_chart(fig, use_container_width=True)
+
+    with st.expander("Markdownレポート全文", expanded=False):
+        st.markdown(report["markdown"])
+
+
+def _us_display_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """表示用に列を絞って日本語見出しへ変換する。"""
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    columns = [
+        ("ticker", "銘柄"),
+        ("short_ratio_pct", "ショート比率%"),
+        ("z20", "z20"),
+        ("z60", "z60"),
+        ("pct60", "pct60"),
+        ("daily_return", "騰落率"),
+        ("clv", "終値位置"),
+        ("volume_ratio", "出来高比"),
+        ("pattern", "パターン候補"),
+    ]
+    available = [(src, label) for src, label in columns if src in df.columns]
+    view = df[[src for src, _ in available]].rename(dict(available), axis=1)
+
+    if "騰落率" in view.columns:
+        view["騰落率"] = view["騰落率"].map(
+            lambda v: "N/A" if pd.isna(v) else f"{v * 100:+.2f}%"
+        )
+    for column in ["ショート比率%", "z20", "z60", "pct60", "終値位置", "出来高比"]:
+        if column in view.columns:
+            view[column] = view[column].map(
+                lambda v: "N/A" if pd.isna(v) else f"{v:.2f}"
+            )
+    return view
 
 
 if __name__ == "__main__":

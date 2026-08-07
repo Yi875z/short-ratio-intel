@@ -1545,6 +1545,17 @@ def _cached_us_flow_frames():
     return get_us_short_volume_df(), get_us_market_daily_df()
 
 
+@st.cache_data(ttl=600, show_spinner="米国フロー指標を計算中…")
+def _cached_us_report(target_date: str):
+    """日付ごとにレポートをキャッシュする。
+
+    Streamlit はウィジェット操作のたびにスクリプト全体を再実行するため、
+    キャッシュしないと銘柄を切り替えるだけで毎回フル計算が走る（実測2.3秒）。
+    """
+    short_df, price_df = _cached_us_flow_frames()
+    return build_daily_report(target_date, short_df, price_df)
+
+
 def _render_us_flow_tab() -> None:
     """米国個別株のショートフロー（FINRA報告分）を表示する。"""
     st.subheader("🇺🇸 米国ショートフロー（FINRA CNMS）")
@@ -1570,7 +1581,7 @@ def _render_us_flow_tab() -> None:
     dates = sorted(short_df["date"].unique(), reverse=True)
     selected = st.selectbox("対象営業日", dates, index=0, key="us_flow_date")
 
-    report = build_daily_report(selected, short_df, price_df)
+    report = _cached_us_report(selected)
     coverage = report["coverage"]
 
     st.markdown(

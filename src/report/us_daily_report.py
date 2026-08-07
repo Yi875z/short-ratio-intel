@@ -23,6 +23,10 @@ from src.analyzer.us_flow_classifier import (
 # ETF乖離を見るときに構成銘柄側として使うバスケット
 _DIVERGENCE_BASKET = "SEMI20"
 
+# レポートは対象日しか表示しないため、指標計算は直近N営業日だけで足りる。
+# SQUEEZE_BUILDING の連続3営業日判定に余裕を持たせた値。
+_RECENT_ROWS_FOR_REPORT = 10
+
 
 def _fmt(value: Optional[float], digits: int = 2, suffix: str = "", sign: bool = False) -> str:
     """欠損を「N/A」で表す。判定できなかったことを数値で誤魔化さない。"""
@@ -63,16 +67,24 @@ def build_daily_report(
     if short_df is None or short_df.empty:
         return _empty_report(target_date, expected)
 
-    metrics = classify_flow_metrics(build_flow_metrics(short_df, price_df))
+    # 対象日以前に絞る。過去日を指定したときに未来の行が混ざらず、
+    # tail_rows の「直近N営業日」も対象日を終端とする範囲になる。
+    history = short_df[short_df["date"] <= target_date]
+    if history.empty:
+        return _empty_report(target_date, expected)
+
+    metrics = classify_flow_metrics(
+        build_flow_metrics(history, price_df, tail_rows=_RECENT_ROWS_FOR_REPORT)
+    )
     today = metrics[metrics["date"] == target_date].copy()
     if today.empty:
         return _empty_report(target_date, expected)
 
     today = today.sort_values("z20", ascending=False, na_position="last")
 
-    baskets = build_all_basket_metrics(short_df, target_date)
+    baskets = build_all_basket_metrics(history, target_date)
     divergences = [
-        compute_divergence(short_df, _DIVERGENCE_BASKET, etf, target_date)
+        compute_divergence(history, _DIVERGENCE_BASKET, etf, target_date)
         for etf in ETF_THEME
     ]
 

@@ -131,16 +131,21 @@ def build_flow_metrics(
     price_df: Optional[pd.DataFrame] = None,
     window_short: int = US_ZSCORE_WINDOW_SHORT,
     window_long: int = US_ZSCORE_WINDOW_LONG,
+    tail_rows: Optional[int] = None,
 ) -> pd.DataFrame:
     """銘柄ごとのローリング統計を付加した DataFrame を返す。
 
     Args:
         short_df: db.get_us_short_volume_df() の戻り（date, ticker, short_ratio_pct ほか）
         price_df: db.get_us_market_daily_df() の戻り（任意。あれば騰落率・CLV・出来高比を付ける）
+        tail_rows: 指定すると銘柄ごとの直近N営業日ぶんだけを返す。
+                   Zスコアの窓には全履歴を使うので値は変わらない。
+                   日次レポートのように最新日しか要らない場合、全履歴ぶんの
+                   計算を避けるために使う（249営業日で実測1.7秒→0.1秒）。
 
     Returns:
         入力に z20 / z60 / pct60 / daily_return / clv / volume_ratio を足した DataFrame。
-        判定できない箇所は None のまま（前日値のコピーや補間は行わない）。
+        判定できない箇所は欠損のまま（前日値のコピーや補間は行わない）。
     """
     if short_df is None or short_df.empty:
         return pd.DataFrame()
@@ -165,8 +170,13 @@ def build_flow_metrics(
         for column in metric_columns
     }
 
+    keep_indexes: list = []
+
     for _, group in df.groupby("ticker", sort=False):
         row_indexes = list(group.index)
+        # 計算対象を直近N営業日に絞る（履歴は下の ratios[:i] で全期間を参照するため値は不変）
+        first_computed = 0 if tail_rows is None else max(0, len(row_indexes) - tail_rows)
+        keep_indexes.extend(row_indexes[first_computed:])
         ratios = group["short_ratio_pct"].tolist()
         closes = group["close"].tolist() if has_price else [None] * len(group)
         highs = group["high"].tolist() if has_price else [None] * len(group)
@@ -178,6 +188,8 @@ def build_flow_metrics(
         )
 
         for i, row_index in enumerate(row_indexes):
+            if i < first_computed:
+                continue
             history = ratios[:i]          # 当日を含めない
             current = ratios[i]
 
@@ -214,6 +226,10 @@ def build_flow_metrics(
 
     for column in metric_columns:
         df[column] = metrics[column]
+
+    if tail_rows is not None:
+        # 計算していない行を「判定不能」と誤読させないよう、返す範囲自体を絞る
+        df = df.loc[sorted(keep_indexes)].reset_index(drop=True)
 
     return df
 

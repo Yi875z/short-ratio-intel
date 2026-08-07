@@ -76,6 +76,18 @@ def test_reupsert_updates_values_in_place(temp_db):
     assert row.short_ratio_pct == pytest.approx(50.0)
 
 
+def test_duplicate_keys_within_one_batch_collapse_to_one_row(temp_db):
+    """同じ日・銘柄が1回の呼び出しに二重で含まれても行は増えず、後の値が残る。"""
+    first = build_record("2026-08-05", "NVDA", short_volume=100.0, reported_total_volume=400.0)
+    second = build_record("2026-08-05", "NVDA", short_volume=300.0, reported_total_volume=400.0)
+
+    db.upsert_us_short_volume_records([first, second])
+
+    with Session(temp_db) as session:
+        row = session.query(UsShortVolumeDaily).one()
+    assert row.short_volume == pytest.approx(300.0)
+
+
 def test_different_sources_are_stored_separately(temp_db):
     """同じ日・同じ銘柄でも報告元が違えば別レコードとして残す。"""
     finra = build_record("2026-08-05", "NVDA", short_volume=100.0, reported_total_volume=400.0)

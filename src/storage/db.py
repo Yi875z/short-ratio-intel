@@ -684,6 +684,49 @@ def get_house_view() -> Optional[tuple[str, datetime]]:
 # （JP=業種別・売買代金JPY / US=銘柄別・株数。単位も粒度も異なる）。
 # ==================================================================
 
+def _apply_bulk_upsert(session, model, rows: list[dict], key_fields: tuple[str, ...]) -> int:
+    """既存行を1回のSELECTで引き当て、まとめてINSERT/UPDATEする。
+
+    1行ずつ SELECT+INSERT すると Supabase 相手では往復遅延が支配的になり、
+    数千行のバックフィルで数十分かかる。往復回数を数回に抑えるための共通処理。
+    冪等性は呼び出し側と同じ（キー重複は行を増やさず更新になる）。
+    """
+    if not rows:
+        return 0
+
+    # 同一バッチ内のキー重複は後勝ちで畳む（重複INSERTで制約違反にしない）
+    deduped: dict[tuple, dict] = {}
+    for row in rows:
+        deduped[tuple(row[field] for field in key_fields)] = row
+    rows = list(deduped.values())
+
+    dates = {row["date"] for row in rows}
+    existing_stmt = select(
+        model.id, *[getattr(model, field) for field in key_fields]
+    ).where(model.date.in_(dates))
+    existing_ids = {
+        tuple(record[1:]): record[0]
+        for record in session.execute(existing_stmt).all()
+    }
+
+    to_insert: list[dict] = []
+    to_update: list[dict] = []
+    for row in rows:
+        key = tuple(row[field] for field in key_fields)
+        row_id = existing_ids.get(key)
+        if row_id is None:
+            to_insert.append(row)
+        else:
+            to_update.append({**row, "id": row_id})
+
+    if to_insert:
+        session.bulk_insert_mappings(model, to_insert)
+    if to_update:
+        session.bulk_update_mappings(model, to_update)
+
+    return len(rows)
+
+
 def upsert_us_short_volume_records(records: list[dict]) -> int:
     """米国ショートボリュームをUPSERTする。
 
@@ -694,50 +737,33 @@ def upsert_us_short_volume_records(records: list[dict]) -> int:
     if not records:
         return 0
 
+    now = datetime.utcnow()
+    rows: list[dict] = []
+    for r in records:
+        date_value = r.get("Date")
+        ticker = r.get("Ticker")
+        if not date_value or not ticker:
+            logger.warning(f"米国ショートボリュームの必須項目が欠落: {r}")
+            continue
+        rows.append({
+            "date": date_value,
+            "ticker": ticker,
+            "source": r.get("Source") or "UNKNOWN",
+            "region": r.get("Region") or "US",
+            "venue_scope": r.get("VenueScope") or "",
+            "short_volume": r.get("ShortVolume"),
+            "short_exempt_volume": r.get("ShortExemptVolume"),
+            "reported_total_volume": r.get("ReportedTotalVolume"),
+            "short_ratio_pct": r.get("ShortRatioPct"),
+            "market_codes": r.get("MarketCodes"),
+            "ingested_at": now,
+        })
+
     engine = get_db_engine()
-    saved = 0
-
     with Session(engine) as session:
-        for r in records:
-            date_value = r.get("Date")
-            ticker = r.get("Ticker")
-            source = r.get("Source") or "UNKNOWN"
-            if not date_value or not ticker:
-                logger.warning(f"米国ショートボリュームの必須項目が欠落: {r}")
-                continue
-
-            existing = session.execute(
-                select(UsShortVolumeDaily).where(
-                    UsShortVolumeDaily.date == date_value,
-                    UsShortVolumeDaily.ticker == ticker,
-                    UsShortVolumeDaily.source == source,
-                )
-            ).scalar_one_or_none()
-
-            if existing:
-                existing.region = r.get("Region") or "US"
-                existing.venue_scope = r.get("VenueScope") or ""
-                existing.short_volume = r.get("ShortVolume")
-                existing.short_exempt_volume = r.get("ShortExemptVolume")
-                existing.reported_total_volume = r.get("ReportedTotalVolume")
-                existing.short_ratio_pct = r.get("ShortRatioPct")
-                existing.market_codes = r.get("MarketCodes")
-                existing.ingested_at = datetime.utcnow()
-            else:
-                session.add(UsShortVolumeDaily(
-                    date=date_value,
-                    ticker=ticker,
-                    region=r.get("Region") or "US",
-                    source=source,
-                    venue_scope=r.get("VenueScope") or "",
-                    short_volume=r.get("ShortVolume"),
-                    short_exempt_volume=r.get("ShortExemptVolume"),
-                    reported_total_volume=r.get("ReportedTotalVolume"),
-                    short_ratio_pct=r.get("ShortRatioPct"),
-                    market_codes=r.get("MarketCodes"),
-                ))
-            saved += 1
-
+        saved = _apply_bulk_upsert(
+            session, UsShortVolumeDaily, rows, ("date", "ticker", "source")
+        )
         session.commit()
 
     logger.info(f"米国ショートボリューム {saved}件を保存しました")
@@ -819,45 +845,29 @@ def upsert_us_market_daily_records(records: list[dict]) -> int:
     if not records:
         return 0
 
+    now = datetime.utcnow()
+    rows: list[dict] = []
+    for r in records:
+        date_value = r.get("Date")
+        ticker = r.get("Ticker")
+        if not date_value or not ticker:
+            logger.warning(f"米国日足の必須項目が欠落: {r}")
+            continue
+        rows.append({
+            "date": date_value,
+            "ticker": ticker,
+            "open": r.get("Open"),
+            "high": r.get("High"),
+            "low": r.get("Low"),
+            "close": r.get("Close"),
+            "adj_close": r.get("AdjClose"),
+            "market_volume": r.get("MarketVolume"),
+            "ingested_at": now,
+        })
+
     engine = get_db_engine()
-    saved = 0
-
     with Session(engine) as session:
-        for r in records:
-            date_value = r.get("Date")
-            ticker = r.get("Ticker")
-            if not date_value or not ticker:
-                logger.warning(f"米国日足の必須項目が欠落: {r}")
-                continue
-
-            existing = session.execute(
-                select(UsMarketDaily).where(
-                    UsMarketDaily.date == date_value,
-                    UsMarketDaily.ticker == ticker,
-                )
-            ).scalar_one_or_none()
-
-            if existing:
-                existing.open = r.get("Open")
-                existing.high = r.get("High")
-                existing.low = r.get("Low")
-                existing.close = r.get("Close")
-                existing.adj_close = r.get("AdjClose")
-                existing.market_volume = r.get("MarketVolume")
-                existing.ingested_at = datetime.utcnow()
-            else:
-                session.add(UsMarketDaily(
-                    date=date_value,
-                    ticker=ticker,
-                    open=r.get("Open"),
-                    high=r.get("High"),
-                    low=r.get("Low"),
-                    close=r.get("Close"),
-                    adj_close=r.get("AdjClose"),
-                    market_volume=r.get("MarketVolume"),
-                ))
-            saved += 1
-
+        saved = _apply_bulk_upsert(session, UsMarketDaily, rows, ("date", "ticker"))
         session.commit()
 
     logger.info(f"米国日足 {saved}件を保存しました")

@@ -1,0 +1,100 @@
+name: 米国ショートフロー 日次取得
+
+# トリガー:
+#   1. 平日(月〜金) 朝 08:37 JST の自動実行
+#      FINRA の当日ファイルは米東部18:00頃に公開される。JSTでは夏時間で翌朝07:00、
+#      冬時間で08:00。冬時間でも間に合うよう08:30台に置いている。
+#   2. Actions タブからの手動実行（workflow_dispatch / スマホからも可）
+#
+# ⚠️ 日本側の daily_fetch.yml（19:07 JST・Gemini AIレポート）とは独立している。
+#    こちらは Gemini を呼ばず、ルールベースでレポートを作る。
+on:
+  schedule:
+    # 08:37 JST 平日 = 23:37 UTC 日〜木。
+    # UTC日曜23:37 → JST月曜08:37 なので、曜日指定は 0-4（日〜木）になる。
+    # 「毎時00分」はGitHubのスケジュールが混雑して遅延しやすいため分をずらしている。
+    - cron: '37 23 * * 0-4'
+  workflow_dispatch:
+    inputs:
+      date:
+        description: '対象日 YYYY-MM-DD（空欄なら直近営業日を自動判定）'
+        required: false
+        type: string
+      days:
+        description: 'さかのぼる暦日数（既定5）'
+        required: false
+        type: string
+      skip_price:
+        description: '日足OHLCVの取得をスキップする'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      TZ: Asia/Tokyo
+      # Supabase(PostgreSQL) 接続文字列。未設定なら SQLite になり、
+      # ランナー破棄とともにデータが消えるので必ず Secrets に入れておくこと。
+      DATABASE_URL:      ${{ secrets.DATABASE_URL }}
+      # 任意: 完了/失敗サマリーの Slack 通知
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      # ※ FINRA CNMS も Yahoo Finance chart API も認証不要。APIキーは追加不要。
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run US pipeline
+        run: |
+          set -e
+          ARGS=""
+          DATE_ARG="${{ inputs.date }}"
+          DAYS_ARG="${{ inputs.days }}"
+          if [ -n "$DATE_ARG" ]; then
+            ARGS="$ARGS --date $DATE_ARG"
+          fi
+          if [ -n "$DAYS_ARG" ]; then
+            ARGS="$ARGS --days $DAYS_ARG"
+          fi
+          if [ "${{ inputs.skip_price }}" = "true" ]; then
+            ARGS="$ARGS --no-price"
+          fi
+          echo "Date: ${DATE_ARG:-(auto)}"
+          echo "TZ:   $TZ"; date
+          echo "Run:  python -m scripts.fetch_us_short_flow $ARGS"
+          python -m scripts.fetch_us_short_flow $ARGS
+
+      - name: Upload report
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: us-short-flow-report-${{ github.run_id }}
+          path: data/reports/*_us_short_flow.md
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-logs-${{ github.run_id }}
+          path: |
+            logs/
+            *.log
+          retention-days: 14
+          if-no-files-found: ignore

@@ -4,7 +4,7 @@
 > 本ファイルへの参照のみを記載し、ルール本文を複製しないこと。
 > 新しいAIエージェントを導入する場合も、そのエージェントの規約ファイルから本ファイルを参照させるだけでよい。
 
-- 最終更新: 2026-08-06（テスト基準を119件へ更新：米国ショートフロー US-P1 実装に伴う47件）
+- 最終更新: 2026-08-07（テスト基準を145件へ更新：米国ショートフロー US-P2 実装に伴う26件）
 - 対象プロジェクト: short-ratio-intel（JPX空売り比率の取得・分析・Gemini AIレポート生成 Streamlit アプリ）
 - 公開区分: L3（コードは一般公開。ナレッジ原本・Secrets・個人データはリポジトリ外で非公開管理）
 
@@ -75,14 +75,17 @@
 - **技術スタック**: Python 3.12（Streamlit Community Cloud 固定。新しすぎる Python は固定依存の wheel が無くビルド失敗する）/
   pandas 2.2.0 / SQLAlchemy 2.0.27 / psycopg2-binary / pydantic 2.6.0 / loguru / feedparser / Streamlit / Gemini API / pytest
 - **起動コマンド**: `streamlit run app/streamlit_app.py`（本番は Streamlit Community Cloud・bcrypt ログイン付き。main へ push すると自動再デプロイ）
-- **テストコマンド**: `pytest`（基準: 全119件パス。2026-08-06 実測 9秒。米国ショートフロー US-P1 のテスト47件追加）
+- **テストコマンド**: `pytest`（基準: 全145件パス。2026-08-07 実測 8秒。米国ショートフロー US-P2 のテスト26件追加）
 - **DBスキーマの正**: `src/storage/db.py` の `get_engine()` が `DATABASE_URL` ありで Supabase(PostgreSQL)、無しでローカル SQLite に切替。
   スキーマ定義の正本ファイルは未確認（`src/storage/` 配下を参照）
 - **データソースと取得条件**:
   - 空売り比率: stock-marketdata.com のスクレイパー（`jquants_client.py` — **名前に反し J-Quants API は使わない**・認証鍵不要）
   - JPX公開PDF（`jpx_pdf_client.py`）
   - RSSニュース（feedparser・ロイター/日経/Bloomberg/Google News）
-- **スケジュール実行**: GitHub Actions `daily_fetch.yml` 平日19:00 JST（cron `0 10 * * 1-5`、`scripts/fetch_short_ratio.py`）→ Supabase → Streamlit Cloud。PC非依存。
+- **スケジュール実行**（いずれも GitHub Actions → Supabase → Streamlit Cloud。PC非依存）:
+  - 日本: `daily_fetch.yml` 平日19:07 JST（cron `7 10 * * 1-5`、`scripts/fetch_short_ratio.py`）。Gemini AIレポートあり。
+  - 米国: `us_daily_fetch.yml` 平日08:37 JST（cron `37 23 * * 0-4`、`scripts/fetch_us_short_flow.py`）。
+    FINRA公開が米東部18:00＝JST翌朝07:00(夏)/08:00(冬)のため朝に置く。ルールベース生成でGeminiは呼ばない。
 - **環境差異**: 公開リポジトリのため、ローカル開発環境の詳細（マシン名・ローカルパス等）は本ファイルに記載しない（ルール9）。
 - **公開区分とその根拠**: L3（コード一般公開）。ナレッジ原本・`.env`・`secrets.toml`・個人データ（`data/`・`*.db`）は `.gitignore` 済みで非公開。
 

@@ -1561,7 +1561,7 @@ def _render_us_flow_tab() -> None:
     """米国個別株のショートフロー（FINRA報告分）を表示する。"""
     st.subheader("🇺🇸 米国ショートフロー（FINRA CNMS）")
     st.caption(
-        "半導体20銘柄＋SMH/SOXX/QQQ/SPY の日次ショートボリューム。"
+        "半導体・AIインフラ・メモリの個別銘柄＋SMH/SOXX/DRAM/QQQ/SPY の日次ショートボリューム。"
         "毎営業日 08:37 JST に自動取得します。"
     )
 

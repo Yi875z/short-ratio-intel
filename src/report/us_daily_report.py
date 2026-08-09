@@ -11,7 +11,7 @@ from typing import Optional
 import pandas as pd
 
 from config.settings import US_ZSCORE_ALERT_THRESHOLD
-from config.us_universe import ETF_THEME, TICKER_GROUP, US_UNIVERSE
+from config.us_universe import DIVERGENCE_PAIRS, TICKER_GROUP, US_UNIVERSE
 from src.analyzer.us_basket import build_all_basket_metrics, compute_divergence
 from src.analyzer.us_flow_analyzer import build_flow_metrics
 from src.analyzer.us_flow_classifier import (
@@ -19,9 +19,6 @@ from src.analyzer.us_flow_classifier import (
     classify_flow_metrics,
     summarize_patterns,
 )
-
-# ETF乖離を見るときに構成銘柄側として使うバスケット
-_DIVERGENCE_BASKET = "SEMI20"
 
 # レポートは対象日しか表示しないため、指標計算は直近N営業日だけで足りる。
 # SQUEEZE_BUILDING の連続3営業日判定に余裕を持たせた値。
@@ -195,9 +192,10 @@ def build_daily_report(
     today = today.sort_values("z20", ascending=False, na_position="last")
 
     baskets = build_all_basket_metrics(history, target_date)
+    # ETFと、その対になる構成銘柄バスケットの組み合わせで乖離を見る
     divergences = [
-        compute_divergence(history, _DIVERGENCE_BASKET, etf, target_date)
-        for etf in ETF_THEME
+        compute_divergence(history, basket, etf, target_date)
+        for etf, basket in DIVERGENCE_PAIRS
     ]
 
     alerts = today[today["z20"].abs() >= US_ZSCORE_ALERT_THRESHOLD]

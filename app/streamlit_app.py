@@ -77,6 +77,7 @@ from src.storage.db import (
 # データが無くてもこのタブ内で完結して案内を出す。
 from src.storage.db import get_us_market_daily_df, get_us_short_volume_df
 from src.report.us_daily_report import build_daily_report
+from src.analyzer.us_flow_classifier import PATTERN_LABELS
 
 
 AUTO_FETCH_DAYS = 5
@@ -1584,48 +1585,53 @@ def _render_us_flow_tab() -> None:
     report = _cached_us_report(selected)
     coverage = report["coverage"]
 
-    st.markdown(
-        f"**取得銘柄 {coverage['present']} / {coverage['expected']}**"
-        + (f"　欠損: {', '.join(coverage['missing'])}" if coverage["missing"] else "")
-    )
+    # --- この日の読み方（日本語） ---
+    st.markdown("#### この日の読み方")
+    st.info(report.get("summary_ja", ""))
     st.caption(
-        "⚠️ FINRA報告分（Off-Exchange）のみで米国市場全体ではありません。"
-        "日次ショートボリュームはフローであり、空売り残高（Short Interest）ではありません。"
+        f"取得銘柄 {coverage['present']} / {coverage['expected']}"
+        + (f"　欠損: {', '.join(coverage['missing'])}" if coverage["missing"] else "")
+        + "　｜　FINRA報告分（取引所外）のみで米国市場全体ではありません。"
+        "日次の数字は売買の流れ（フロー）であり、空売り残高ではありません。"
     )
 
     # --- バスケット ---
     if report["baskets"]:
-        st.markdown("#### バスケット（ボリューム加重）")
+        st.markdown("#### バスケット（銘柄をまとめた比率・出来高で加重）")
         cols = st.columns(len(report["baskets"]))
         for col, b in zip(cols, report["baskets"]):
             z20 = "N/A" if b["z20"] is None else f"{b['z20']:+.2f}"
             dod = None if b["dod_change"] is None else f"{b['dod_change']:+.2f}pt"
             col.metric(
-                label=f"{b['basket']}（z20 {z20}）",
+                label=f"{b['basket']}（20日Zスコア {z20}）",
                 value=f"{b['ratio']:.2f}%",
                 delta=dod,
             )
 
     # --- ETF乖離 ---
     if report["divergences"]:
-        st.markdown("#### ETF乖離（テーマヘッジか銘柄選別か）")
+        st.markdown("#### ETFと個別銘柄の差（テーマ全体のヘッジか、銘柄選別か）")
         for d in report["divergences"]:
             div = "N/A" if d["divergence"] is None else f"{d['divergence']:+.2f}"
-            st.markdown(f"- **{d['etf']}** divergence `{div}` … {d['interpretation']}")
+            st.markdown(f"- **{d['etf']}** 乖離 `{div}` … {d['interpretation']}")
+
+    # --- 今日の比較（横棒） ---
+    _render_us_today_comparison(report)
 
     # --- アラート ---
-    st.markdown("#### アラート（|z20| ≧ 2.0）")
-    alerts = pd.DataFrame(report["alerts"])
-    if alerts.empty:
+    st.markdown(f"#### 注目銘柄（過去20日から±2σ以上ずれた銘柄）")
+    descriptions = report.get("alert_descriptions") or []
+    if not descriptions:
         st.info("該当なし。")
     else:
+        for text in descriptions:
+            st.markdown(f"- {text}")
         st.dataframe(
-            _us_display_frame(alerts),
+            _us_display_frame(pd.DataFrame(report["alerts"])),
             use_container_width=True,
             hide_index=True,
         )
 
-    # --- 全銘柄 ---
     with st.expander("全銘柄を表示", expanded=False):
         st.dataframe(
             _us_display_frame(report["metrics"]),
@@ -1633,28 +1639,165 @@ def _render_us_flow_tab() -> None:
             hide_index=True,
         )
 
-    # --- 銘柄別の推移 ---
-    st.markdown("#### 銘柄別の推移")
+    # --- 比較チャート ---
+    _render_us_comparison_chart(short_df)
+    _render_us_ticker_detail(short_df, price_df)
+
+    with st.expander("用語の説明", expanded=False):
+        st.markdown(
+            "- **ショート比率**: その日にFINRA報告分の出来高のうち、空売りとして報告された割合。\n"
+            "- **20日Zスコア**: その銘柄自身の直近20営業日の平均から、今日が何σ離れているか。"
+            "銘柄ごとに平常の水準が違う（SPYは常時65%前後、SMHは40%前後）ため、"
+            "「50%を超えたから弱気」といった絶対値の判断はしません。\n"
+            "- **60日順位%**: 直近60営業日の分布のなかで今日が下から何%の位置にあるか。100%に近いほど高水準。\n"
+            "- **終値位置**: その日の値幅の中で終値がどこで引けたか。+1が高値引け、−1が安値引け。\n"
+            "- **出来高比**: 直近20営業日の平均出来高に対する当日の倍率。\n"
+            "- **乖離**: ETFのZスコア − 構成銘柄をまとめたZスコア。"
+            "プラスが大きいとETF側だけ売られている（テーマ全体のヘッジ）、"
+            "マイナスが大きいと個別銘柄だけ売られている（銘柄選別）と読みます。\n"
+            "- **パターン候補**: 上の指標の組み合わせによる分類。"
+            "いずれも当日の売買の流れから見た候補であって、断定ではありません。"
+        )
+
+    with st.expander("レポート全文（Markdown）", expanded=False):
+        st.markdown(report["markdown"])
+
+
+def _render_us_today_comparison(report: dict) -> None:
+    """対象日の全銘柄を20日Zスコアの横棒で比較する。"""
+    metrics = report.get("metrics")
+    if metrics is None or metrics.empty or "z20" not in metrics.columns:
+        return
+
+    frame = metrics.dropna(subset=["z20"]).copy()
+    if frame.empty:
+        st.caption("Zスコアを算出できる銘柄がまだありません（履歴不足）。")
+        return
+
+    frame = frame.sort_values("z20")
+    frame["読み"] = frame["pattern"].map(PATTERN_LABELS).fillna("")
+
+    st.markdown("#### 銘柄比較（対象日・20日Zスコア）")
+    st.caption(
+        "右に伸びるほど、その銘柄にとって普段より空売りが多かった日。"
+        "左に伸びるほど普段より少なかった日です。"
+    )
+    fig = px.bar(
+        frame,
+        x="z20",
+        y="ticker",
+        orientation="h",
+        color="読み",
+        hover_data={"short_ratio_pct": ":.2f", "z20": ":.2f", "読み": True},
+        labels={"z20": "20日Zスコア", "ticker": "銘柄", "short_ratio_pct": "ショート比率%"},
+    )
+    for line in (-2.0, 2.0):
+        fig.add_vline(x=line, line_dash="dot", line_color="#c0392b", opacity=0.6)
+    fig.update_layout(
+        height=max(360, 18 * len(frame)),
+        margin=dict(l=10, r=10, t=10, b=10),
+        legend_title_text="パターン候補",
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def _render_us_comparison_chart(short_df: pd.DataFrame) -> None:
+    """複数銘柄のショート比率を重ねて比較する。"""
+    st.markdown("#### 銘柄比較（推移）")
+    st.caption("複数銘柄のショート比率を重ねて、どこにショートが偏っているかを見ます。")
+
+    tickers = sorted(short_df["ticker"].unique())
+    defaults = [t for t in ("NVDA", "AMD", "SMH") if t in tickers] or tickers[:3]
+    selected = st.multiselect(
+        "比較する銘柄（複数選択可）", tickers, default=defaults, key="us_compare_tickers"
+    )
+    period = st.radio(
+        "期間", ["60営業日", "120営業日", "全期間"], index=0,
+        horizontal=True, key="us_compare_period",
+    )
+
+    if not selected:
+        st.info("銘柄を1つ以上選んでください。")
+        return
+
+    frame = short_df[short_df["ticker"].isin(selected)].sort_values("date")
+    if period != "全期間":
+        days = int(period.replace("営業日", ""))
+        keep_dates = sorted(short_df["date"].unique())[-days:]
+        frame = frame[frame["date"].isin(keep_dates)]
+
+    fig = px.line(
+        frame,
+        x="date",
+        y="short_ratio_pct",
+        color="ticker",
+        labels={"date": "日付", "short_ratio_pct": "ショート比率(%)", "ticker": "銘柄"},
+    )
+    fig.update_layout(height=380, margin=dict(l=10, r=10, t=10, b=10), legend_title_text="銘柄")
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def _render_us_ticker_detail(short_df: pd.DataFrame, price_df: Optional[pd.DataFrame]) -> None:
+    """1銘柄について株価とショート比率を重ね、過去の平常域も示す。"""
+    import plotly.graph_objects as go
+
+    st.markdown("#### 株価とショート比率の重ね合わせ")
+    st.caption(
+        "同じ時間軸で株価（左軸）とショート比率（右軸）を並べます。"
+        "帯は直近20営業日の平均±2σで、ここを外れた日が「普段と違う日」です。"
+    )
+
     tickers = sorted(short_df["ticker"].unique())
     default_index = tickers.index("NVDA") if "NVDA" in tickers else 0
     ticker = st.selectbox("銘柄", tickers, index=default_index, key="us_flow_ticker")
 
-    history = short_df[short_df["ticker"] == ticker].sort_values("date")
+    history = short_df[short_df["ticker"] == ticker][["date", "short_ratio_pct"]].sort_values("date")
     if history.empty:
         st.info("推移データがありません。")
-    else:
-        fig = px.line(
-            history,
-            x="date",
-            y="short_ratio_pct",
-            title=f"{ticker} FINRA ショート比率の推移",
-            labels={"date": "日付", "short_ratio_pct": "ショート比率(%)"},
-        )
-        fig.update_layout(height=320, margin=dict(l=10, r=10, t=48, b=10))
-        st.plotly_chart(fig, use_container_width=True)
+        return
 
-    with st.expander("Markdownレポート全文", expanded=False):
-        st.markdown(report["markdown"])
+    # 平常域（直近20営業日の平均±2σ）。当日を含めないよう1日ずらす
+    rolling = history["short_ratio_pct"].shift(1).rolling(20, min_periods=16)
+    history = history.assign(
+        mean20=rolling.mean(),
+        upper=rolling.mean() + 2 * rolling.std(ddof=0),
+        lower=rolling.mean() - 2 * rolling.std(ddof=0),
+    )
+
+    fig = go.Figure()
+
+    if price_df is not None and not price_df.empty:
+        price = price_df[price_df["ticker"] == ticker][["date", "close"]].sort_values("date")
+        if not price.empty:
+            fig.add_trace(go.Scatter(
+                x=price["date"], y=price["close"], name="株価(終値)",
+                yaxis="y", line=dict(color="#1f5fa8", width=2),
+            ))
+
+    fig.add_trace(go.Scatter(
+        x=history["date"], y=history["upper"], name="平常域の上限(+2σ)",
+        yaxis="y2", line=dict(color="rgba(192,57,43,0.25)", width=1), showlegend=False,
+    ))
+    fig.add_trace(go.Scatter(
+        x=history["date"], y=history["lower"], name="平常域(20日平均±2σ)",
+        yaxis="y2", line=dict(color="rgba(192,57,43,0.25)", width=1),
+        fill="tonexty", fillcolor="rgba(192,57,43,0.08)",
+    ))
+    fig.add_trace(go.Scatter(
+        x=history["date"], y=history["short_ratio_pct"], name="ショート比率(%)",
+        yaxis="y2", line=dict(color="#c0392b", width=2),
+    ))
+
+    fig.update_layout(
+        height=420,
+        margin=dict(l=10, r=10, t=10, b=10),
+        xaxis=dict(title="日付"),
+        yaxis=dict(title="株価(USD)", side="left"),
+        yaxis2=dict(title="ショート比率(%)", side="right", overlaying="y", showgrid=False),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        hovermode="x unified",
+    )
+    st.plotly_chart(fig, use_container_width=True)
 
 
 def _us_display_frame(df: pd.DataFrame) -> pd.DataFrame:
@@ -1662,16 +1805,20 @@ def _us_display_frame(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
 
+    df = df.copy()
+    if "pattern" in df.columns:
+        df["pattern_ja"] = df["pattern"].map(PATTERN_LABELS).fillna(df["pattern"])
+
     columns = [
         ("ticker", "銘柄"),
         ("short_ratio_pct", "ショート比率%"),
-        ("z20", "z20"),
-        ("z60", "z60"),
-        ("pct60", "pct60"),
+        ("z20", "20日Zスコア"),
+        ("z60", "60日Zスコア"),
+        ("pct60", "60日順位%"),
         ("daily_return", "騰落率"),
         ("clv", "終値位置"),
         ("volume_ratio", "出来高比"),
-        ("pattern", "パターン候補"),
+        ("pattern_ja", "パターン候補"),
     ]
     available = [(src, label) for src, label in columns if src in df.columns]
     view = df[[src for src, _ in available]].rename(dict(available), axis=1)
@@ -1680,13 +1827,12 @@ def _us_display_frame(df: pd.DataFrame) -> pd.DataFrame:
         view["騰落率"] = view["騰落率"].map(
             lambda v: "N/A" if pd.isna(v) else f"{v * 100:+.2f}%"
         )
-    for column in ["ショート比率%", "z20", "z60", "pct60", "終値位置", "出来高比"]:
+    for column in ["ショート比率%", "20日Zスコア", "60日Zスコア", "60日順位%", "終値位置", "出来高比"]:
         if column in view.columns:
             view[column] = view[column].map(
                 lambda v: "N/A" if pd.isna(v) else f"{v:.2f}"
             )
     return view
-
 
 if __name__ == "__main__":
     main()

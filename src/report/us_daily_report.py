@@ -46,6 +46,118 @@ def _return_pct(value: Optional[float]) -> str:
     return f"{float(value) * 100:+.2f}%"
 
 
+def _z_phrase(z: Optional[float]) -> str:
+    """Zスコアを日本語の水準表現にする。"""
+    if z is None or pd.isna(z):
+        return "過去との比較はまだできません（履歴不足）"
+    z = float(z)
+    if z >= 2.0:
+        level = "過去20日と比べて際立って高い"
+    elif z >= 1.0:
+        level = "過去20日と比べてやや高い"
+    elif z <= -2.0:
+        level = "過去20日と比べて際立って低い"
+    elif z <= -1.0:
+        level = "過去20日と比べてやや低い"
+    else:
+        level = "過去20日並み"
+    return f"{z:+.2f}σ（{level}）"
+
+
+def _clv_phrase(clv: Optional[float]) -> str:
+    """終値位置を日本語にする。"""
+    if clv is None or pd.isna(clv):
+        return ""
+    clv = float(clv)
+    if clv >= 0.3:
+        return "高値引け寄り"
+    if clv <= -0.3:
+        return "安値引け寄り"
+    return "中位引け"
+
+
+def _volume_phrase(volume_ratio: Optional[float]) -> str:
+    """出来高比を日本語にする。"""
+    if volume_ratio is None or pd.isna(volume_ratio):
+        return ""
+    volume_ratio = float(volume_ratio)
+    if volume_ratio >= 1.2:
+        return f"出来高は平常の{volume_ratio:.2f}倍（増加）"
+    if volume_ratio <= 0.8:
+        return f"出来高は平常の{volume_ratio:.2f}倍（減少）"
+    return f"出来高は平常並み（{volume_ratio:.2f}倍）"
+
+
+def describe_row(row) -> str:
+    """1銘柄の状況を日本語1文で説明する。
+
+    断定を避け、観測事実を並べたうえで「〜の候補」で締める（QCルール4）。
+    """
+    ticker = row.get("ticker", "")
+    ratio = row.get("short_ratio_pct")
+    parts = [f"ショート比率{_pct(ratio)}"]
+
+    parts.append(_z_phrase(row.get("z20")))
+
+    pct60 = row.get("pct60")
+    if pct60 is not None and not pd.isna(pct60):
+        parts.append(f"直近60日の分布では下から{float(pct60):.0f}%の位置")
+
+    daily_return = row.get("daily_return")
+    if daily_return is not None and not pd.isna(daily_return):
+        move = f"株価{_return_pct(daily_return)}"
+        clv = _clv_phrase(row.get("clv"))
+        parts.append(f"{move}・{clv}" if clv else move)
+
+    volume = _volume_phrase(row.get("volume_ratio"))
+    if volume:
+        parts.append(volume)
+
+    label = PATTERN_LABELS.get(row.get("pattern", ""), "")
+    body = "、".join(parts)
+    return f"{ticker}: {body}。→ {label}" if label else f"{ticker}: {body}。"
+
+
+def describe_day(report: dict) -> str:
+    """その日の全体像を日本語の短い段落にする。"""
+    baskets = report.get("baskets") or []
+    divergences = report.get("divergences") or []
+    alerts = report.get("alerts") or []
+
+    lines: list[str] = []
+
+    for b in baskets:
+        if b["basket"] != "SEMI20":
+            continue
+        lines.append(
+            f"半導体20銘柄をまとめたショート比率は{_pct(b['ratio'])}で、"
+            f"{_z_phrase(b['z20'])}。"
+        )
+
+    for d in divergences:
+        if d["divergence"] is None:
+            continue
+        lines.append(
+            f"ETFの{d['etf']}と個別銘柄の差（乖離）は{d['divergence']:+.2f}。{d['interpretation']}。"
+        )
+        break   # 代表としてSMHのみ。SOXXは表で確認できる
+
+    if alerts:
+        names = "・".join(a["ticker"] for a in alerts[:5])
+        lines.append(
+            f"過去との差が大きい銘柄は{len(alerts)}件（{names}）。"
+            "個別の読み方は下の一覧を参照してください。"
+        )
+    else:
+        lines.append("過去との差が際立つ銘柄はありませんでした。")
+
+    lines.append(
+        "いずれも当日のフロー（売買の流れ）から見た候補であり、"
+        "持ち越しの空売り残高が増えたことを示すものではありません。"
+    )
+    return "".join(lines)
+
+
 def build_daily_report(
     target_date: str,
     short_df: pd.DataFrame,
@@ -102,7 +214,7 @@ def build_daily_report(
     )
     highlights = _render_highlights(target_date, baskets, divergences, alerts, coverage)
 
-    return {
+    result = {
         "date": target_date,
         "markdown": markdown,
         "highlights": highlights,
@@ -113,6 +225,10 @@ def build_daily_report(
         "coverage": coverage,
         "metrics": today,
     }
+    # 日本語の読み下し。Markdown・Streamlit の両方で同じ文面を使う（DRY）
+    result["summary_ja"] = describe_day(result)
+    result["alert_descriptions"] = [describe_row(r) for _, r in alerts.iterrows()]
+    return result
 
 
 def _empty_report(target_date: str, expected: list[str]) -> dict:
@@ -132,6 +248,8 @@ def _empty_report(target_date: str, expected: list[str]) -> dict:
         "pattern_counts": {},
         "coverage": {"expected": len(expected), "present": 0, "missing": sorted(expected)},
         "metrics": pd.DataFrame(),
+        "summary_ja": f"{target_date} は米国のデータがありません（FINRA未公開または休場）。",
+        "alert_descriptions": [],
     }
 
 
@@ -155,7 +273,15 @@ def _render_markdown(
         "- ⚠️ 本データは FINRA 報告分（Off-Exchange）のみで、米国市場全体ではありません。",
         "- ⚠️ 日次ショートボリュームはフローであり、空売り残高（Short Interest）ではありません。",
         "",
-        "## 1. バスケット（ボリューム加重）",
+        "## 1. この日の読み方",
+        "",
+        describe_day({
+            "baskets": baskets,
+            "divergences": divergences,
+            "alerts": alerts.to_dict("records"),
+        }),
+        "",
+        "## 2. バスケット（ボリューム加重）",
         "",
     ]
 
@@ -194,8 +320,11 @@ def _render_markdown(
     if alerts.empty:
         lines.append("該当なし。")
     else:
+        for _, r in alerts.iterrows():
+            lines.append(f"- {describe_row(r)}")
         lines += [
-            "| Ticker | Ratio | z20 | z60 | pct60 | Return | CLV | 出来高比 | パターン候補 |",
+            "",
+            "| 銘柄 | ショート比率 | 20日Zスコア | 60日Zスコア | 60日順位% | 騰落率 | 終値位置 | 出来高比 | パターン候補 |",
             "|---|---|---|---|---|---|---|---|---|",
         ]
         for _, r in alerts.iterrows():
@@ -212,7 +341,7 @@ def _render_markdown(
         "",
         "## 5. 全銘柄",
         "",
-        "| Ticker | グループ | Ratio | z20 | z60 | pct60 | Return | CLV | 出来高比 | パターン候補 |",
+        "| 銘柄 | グループ | ショート比率 | 20日Zスコア | 60日Zスコア | 60日順位% | 騰落率 | 終値位置 | 出来高比 | パターン候補 |",
         "|---|---|---|---|---|---|---|---|---|---|",
     ]
     for _, r in today.iterrows():

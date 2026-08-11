@@ -78,7 +78,7 @@ from src.storage.db import (
 from src.storage.db import get_us_market_daily_df, get_us_short_volume_df
 from src.report.us_daily_report import build_daily_report
 from src.analyzer.us_flow_classifier import PATTERN_LABELS
-from config.us_universe import TICKER_GROUP
+from config.us_universe import TICKER_GROUP, ai_category, japanese_name
 
 
 AUTO_FETCH_DAYS = 5
@@ -1589,10 +1589,14 @@ def _render_us_flow_tab() -> None:
     # --- この日の読み方（日本語） ---
     st.markdown("#### この日の読み方")
     st.info(report.get("summary_ja", ""))
+    if coverage["missing"]:
+        st.warning(
+            f"この日は {coverage['present']} / {coverage['expected']} 銘柄しか取得できていません。"
+            f"未取得: {', '.join(coverage['missing'])}"
+        )
     st.caption(
         f"取得銘柄 {coverage['present']} / {coverage['expected']}"
-        + (f"　欠損: {', '.join(coverage['missing'])}" if coverage["missing"] else "")
-        + "　｜　FINRA報告分（取引所外）のみで米国市場全体ではありません。"
+        "　｜　FINRA報告分（取引所外）のみで米国市場全体ではありません。"
         "日次の数字は売買の流れ（フロー）であり、空売り残高ではありません。"
     )
 
@@ -1709,6 +1713,8 @@ def _render_us_today_comparison(report: dict) -> None:
         return
 
     frame["グループ"] = frame["ticker"].map(TICKER_GROUP).fillna("その他")
+    frame["日本語名"] = frame["ticker"].map(japanese_name)
+    frame["AI種別"] = frame["ticker"].map(ai_category)
     groups = sorted(frame["グループ"].unique())
     chosen = st.multiselect(
         "表示するグループ（未選択なら全部）", groups, default=[], key="us_today_groups"
@@ -1733,7 +1739,10 @@ def _render_us_today_comparison(report: dict) -> None:
         y="ticker",
         orientation="h",
         color="読み",
-        hover_data={"short_ratio_pct": ":.2f", "z20": ":.2f", "読み": True},
+        hover_data={
+            "日本語名": True, "AI種別": True,
+            "short_ratio_pct": ":.2f", "z20": ":.2f", "読み": True,
+        },
         labels={"z20": "20日Zスコア", "ticker": "銘柄", "short_ratio_pct": "ショート比率%"},
     )
     for line in (-2.0, 2.0):
@@ -1853,9 +1862,14 @@ def _us_display_frame(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     if "pattern" in df.columns:
         df["pattern_ja"] = df["pattern"].map(PATTERN_LABELS).fillna(df["pattern"])
+    if "ticker" in df.columns:
+        df["name_ja"] = df["ticker"].map(japanese_name)
+        df["ai_category"] = df["ticker"].map(ai_category)
 
     columns = [
         ("ticker", "銘柄"),
+        ("name_ja", "日本語名"),
+        ("ai_category", "AI種別"),
         ("short_ratio_pct", "ショート比率%"),
         ("z20", "20日Zスコア"),
         ("z60", "60日Zスコア"),

@@ -11,7 +11,12 @@ from typing import Optional
 import pandas as pd
 
 from config.settings import US_ZSCORE_ALERT_THRESHOLD
-from config.us_universe import DIVERGENCE_PAIRS, TICKER_GROUP, US_UNIVERSE
+from config.us_universe import (
+    DIVERGENCE_PAIRS,
+    US_UNIVERSE,
+    ai_category,
+    japanese_name,
+)
 from src.analyzer.us_basket import (
     build_all_basket_metrics,
     build_all_basket_spreads,
@@ -116,7 +121,10 @@ def describe_row(row) -> str:
 
     label = PATTERN_LABELS.get(row.get("pattern", ""), "")
     body = "、".join(parts)
-    return f"{ticker}: {body}。→ {label}" if label else f"{ticker}: {body}。"
+
+    name = japanese_name(ticker)
+    heading = f"{ticker}（{name}）" if name and name != ticker else ticker
+    return f"{heading}: {body}。→ {label}" if label else f"{heading}: {body}。"
 
 
 def describe_day(report: dict) -> str:
@@ -359,8 +367,8 @@ def _render_markdown(
             lines.append(f"- {describe_row(r)}")
         lines += [
             "",
-            "| 銘柄 | ショート比率 | 20日Zスコア | 60日Zスコア | 60日順位% | 騰落率 | 終値位置 | 出来高比 | パターン候補 |",
-            "|---|---|---|---|---|---|---|---|---|",
+            "| 銘柄 | 日本語名 | AI種別 | ショート比率 | 20日Zスコア | 60日Zスコア | 60日順位% | 騰落率 | 終値位置 | 出来高比 | パターン候補 |",
+            "|---|---|---|---|---|---|---|---|---|---|---|",
         ]
         for _, r in alerts.iterrows():
             lines.append(_render_row(r))
@@ -376,12 +384,11 @@ def _render_markdown(
         "",
         "## 6. 全銘柄",
         "",
-        "| 銘柄 | グループ | ショート比率 | 20日Zスコア | 60日Zスコア | 60日順位% | 騰落率 | 終値位置 | 出来高比 | パターン候補 |",
-        "|---|---|---|---|---|---|---|---|---|---|",
+        "| 銘柄 | 日本語名 | AI種別 | ショート比率 | 20日Zスコア | 60日Zスコア | 60日順位% | 騰落率 | 終値位置 | 出来高比 | パターン候補 |",
+        "|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for _, r in today.iterrows():
-        group = TICKER_GROUP.get(r["ticker"], "N/A")
-        lines.append(_render_row(r, group=group))
+        lines.append(_render_row(r))
 
     lines += [
         "",
@@ -396,10 +403,13 @@ def _render_markdown(
     return "\n".join(lines)
 
 
-def _render_row(r, group: Optional[str] = None) -> str:
-    cells = [r["ticker"]]
-    if group is not None:
-        cells.append(group)
+def _render_row(r) -> str:
+    ticker = r["ticker"]
+    cells = [
+        ticker,
+        japanese_name(ticker) or "N/A",
+        ai_category(ticker) or "N/A",
+    ]
     cells += [
         _pct(r.get("short_ratio_pct")),
         _fmt(r.get("z20"), sign=True),

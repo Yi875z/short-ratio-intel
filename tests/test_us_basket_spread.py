@@ -100,6 +100,17 @@ def test_configured_divergence_pairs_reference_defined_baskets():
         assert basket in BASKETS, basket
 
 
+def test_every_monitored_ticker_has_japanese_name_and_category():
+    """銘柄を足したときに日本語名・AI種別の登録漏れを検出する。"""
+    from config.us_universe import US_UNIVERSE, ai_category, japanese_name
+
+    missing_name = [t for t in US_UNIVERSE if not japanese_name(t)]
+    missing_category = [t for t in US_UNIVERSE if not ai_category(t)]
+
+    assert not missing_name, f"日本語名が未登録: {missing_name}"
+    assert not missing_category, f"AI種別が未登録: {missing_category}"
+
+
 def test_every_basket_member_is_monitored():
     """バスケットの構成銘柄が監視対象から漏れていないこと。"""
     from config.us_universe import BASKETS, US_UNIVERSE, basket_members

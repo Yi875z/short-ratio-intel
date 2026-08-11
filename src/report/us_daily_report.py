@@ -12,7 +12,11 @@ import pandas as pd
 
 from config.settings import US_ZSCORE_ALERT_THRESHOLD
 from config.us_universe import DIVERGENCE_PAIRS, TICKER_GROUP, US_UNIVERSE
-from src.analyzer.us_basket import build_all_basket_metrics, compute_divergence
+from src.analyzer.us_basket import (
+    build_all_basket_metrics,
+    build_all_basket_spreads,
+    compute_divergence,
+)
 from src.analyzer.us_flow_analyzer import build_flow_metrics
 from src.analyzer.us_flow_classifier import (
     PATTERN_LABELS,
@@ -139,6 +143,16 @@ def describe_day(report: dict) -> str:
         )
         break   # 代表としてSMHのみ。SOXXは表で確認できる
 
+    # 偏りが最も大きいペアだけを述べる（全ペアを並べると読みづらいため）
+    notable = [s for s in (report.get("spreads") or []) if s["spread"] is not None]
+    if notable:
+        top = max(notable, key=lambda s: abs(s["spread"]))
+        if abs(top["spread"]) > 1.5:
+            lines.append(
+                f"ペアで見ると「{top['name']}」の差が{top['spread']:+.2f}で最も開いています。"
+                f"{top['interpretation']}。"
+            )
+
     if alerts:
         names = "・".join(a["ticker"] for a in alerts[:5])
         lines.append(
@@ -198,6 +212,8 @@ def build_daily_report(
         for etf, basket in DIVERGENCE_PAIRS
     ]
 
+    spreads = build_all_basket_spreads(history, target_date)
+
     alerts = today[today["z20"].abs() >= US_ZSCORE_ALERT_THRESHOLD]
     pattern_counts = summarize_patterns(today)
 
@@ -208,7 +224,7 @@ def build_daily_report(
     }
 
     markdown = _render_markdown(
-        target_date, today, baskets, divergences, alerts, pattern_counts, coverage
+        target_date, today, baskets, divergences, spreads, alerts, pattern_counts, coverage
     )
     highlights = _render_highlights(target_date, baskets, divergences, alerts, coverage)
 
@@ -219,6 +235,7 @@ def build_daily_report(
         "alerts": alerts.to_dict("records"),
         "baskets": baskets,
         "divergences": divergences,
+        "spreads": spreads,
         "pattern_counts": pattern_counts,
         "coverage": coverage,
         "metrics": today,
@@ -243,6 +260,7 @@ def _empty_report(target_date: str, expected: list[str]) -> dict:
         "alerts": [],
         "baskets": [],
         "divergences": [],
+        "spreads": [],
         "pattern_counts": {},
         "coverage": {"expected": len(expected), "present": 0, "missing": sorted(expected)},
         "metrics": pd.DataFrame(),
@@ -256,6 +274,7 @@ def _render_markdown(
     today: pd.DataFrame,
     baskets: list[dict],
     divergences: list[dict],
+    spreads: list[dict],
     alerts: pd.DataFrame,
     pattern_counts: dict,
     coverage: dict,
@@ -276,6 +295,7 @@ def _render_markdown(
         describe_day({
             "baskets": baskets,
             "divergences": divergences,
+            "spreads": spreads,
             "alerts": alerts.to_dict("records"),
         }),
         "",
@@ -314,7 +334,24 @@ def _render_markdown(
         for d in divergences:
             lines.append(f"- {d['etf']}: {d['interpretation']}")
 
-    lines += ["", f"## 3. アラート（|z20| ≧ {US_ZSCORE_ALERT_THRESHOLD}）", ""]
+    lines += ["", "## 3. ペア比較（ロング候補 vs ショート候補）", ""]
+    if spreads:
+        lines += [
+            "| 対 | ロング側 z20 | ショート側 z20 | 差 | 読み |",
+            "|---|---|---|---|---|",
+        ]
+        for sp in spreads:
+            lines.append(
+                f"| {sp['name']} | {_fmt(sp['long_z20'], sign=True)} | "
+                f"{_fmt(sp['short_z20'], sign=True)} | **{_fmt(sp['spread'], sign=True)}** | "
+                f"{sp['interpretation']} |"
+            )
+        lines.append("")
+        lines.append("差は空売り比率そのものではなく、各群が自分の過去分布からどれだけ離れたかの差です。")
+    else:
+        lines.append("算出できませんでした。")
+
+    lines += ["", f"## 4. アラート（|z20| ≧ {US_ZSCORE_ALERT_THRESHOLD}）", ""]
     if alerts.empty:
         lines.append("該当なし。")
     else:
@@ -328,7 +365,7 @@ def _render_markdown(
         for _, r in alerts.iterrows():
             lines.append(_render_row(r))
 
-    lines += ["", "## 4. パターン集計", ""]
+    lines += ["", "## 5. パターン集計", ""]
     if pattern_counts:
         for tag, count in sorted(pattern_counts.items(), key=lambda kv: -kv[1]):
             lines.append(f"- {PATTERN_LABELS.get(tag, tag)}（{tag}）: {count}銘柄")
@@ -337,7 +374,7 @@ def _render_markdown(
 
     lines += [
         "",
-        "## 5. 全銘柄",
+        "## 6. 全銘柄",
         "",
         "| 銘柄 | グループ | ショート比率 | 20日Zスコア | 60日Zスコア | 60日順位% | 騰落率 | 終値位置 | 出来高比 | パターン候補 |",
         "|---|---|---|---|---|---|---|---|---|---|",
@@ -348,7 +385,7 @@ def _render_markdown(
 
     lines += [
         "",
-        "## 6. 注記",
+        "## 7. 注記",
         "",
         "- 本レポートのパターンはすべて**候補**です。単日のフローで方向性を断定しません。",
         "- 比率は必ず同一ソース内（FINRA報告分の分子 ÷ FINRA報告分の分母）で算出しています。",

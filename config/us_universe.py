@@ -38,8 +38,37 @@ US_AI_INFRA: list[str] = [        # AIインフラ（半導体そのものでは
 
 US_AI_SOFTWARE: list[str] = ["PLTR"]      # AI関連の高ベータ銘柄（半導体バスケットには入れない）
 
+US_MEGA_CAP: list[str] = [        # マグニフィセント7のうち半導体以外（NVDA は us_semi_core 在籍）
+    "AAPL", "MSFT", "GOOGL", "AMZN", "META", "TSLA",
+]
+
+US_HYPERSCALER_OTHER: list[str] = ["ORCL"]   # AI設備投資の主体。MSFT/GOOGL/AMZN/META は上のグループ
+
+# AIによる代替リスクが語られ、AI半導体ロングの対の空売り側に置かれやすいSaaS。
+# 「席課金モデルがAIに侵食される」という筋書きで売られる側。
+US_SAAS_AI_RISK: list[str] = [
+    "CRM",    # セールスフォース
+    "NOW",    # サービスナウ
+    "WDAY",   # ワークデイ
+    "ADBE",   # アドビ
+    "TEAM",   # アトラシアン
+    "HUBS",   # ハブスポット
+    "DOCU",   # ドキュサイン
+    "ZM",     # ズーム
+]
+
+# AIの受益側とされるデータ基盤SaaS。半導体と同じ方向に動きやすく、ロング側に置かれやすい。
+US_SAAS_AI_INFRA: list[str] = [
+    "SNOW",   # スノーフレーク
+    "MDB",    # モンゴDB
+    "DDOG",   # データドッグ
+    "NET",    # クラウドフレア
+    "ESTC",   # エラスティック
+]
+
 ETF_THEME: list[str] = ["SMH", "SOXX"]    # 半導体テーマETF（ヘッジ需要の代理変数）
 ETF_MEMORY: list[str] = ["DRAM"]          # Roundhill Memory ETF（メモリ特化）
+ETF_SOFTWARE: list[str] = ["IGV"]         # ソフトウェアETF（SaaS個別との対比用）
 ETF_BROAD: list[str] = ["QQQ", "SPY"]     # 広義指数ETF（市場全体のリスクオフ切り分け用）
 
 GROUPS: dict[str, list[str]] = {
@@ -49,8 +78,13 @@ GROUPS: dict[str, list[str]] = {
     "us_ai_memory": US_AI_MEMORY,
     "us_ai_infra": US_AI_INFRA,
     "us_ai_software": US_AI_SOFTWARE,
+    "us_mega_cap": US_MEGA_CAP,
+    "us_hyperscaler_other": US_HYPERSCALER_OTHER,
+    "us_saas_ai_risk": US_SAAS_AI_RISK,
+    "us_saas_ai_infra": US_SAAS_AI_INFRA,
     "etf_theme": ETF_THEME,
     "etf_memory": ETF_MEMORY,
+    "etf_software": ETF_SOFTWARE,
     "etf_broad": ETF_BROAD,
 }
 
@@ -68,6 +102,12 @@ BASKETS: dict[str, list[str]] = {
     "AI_INFRA": ["us_ai_infra", "NVDA", "AMD", "AVGO", "MRVL", "ARM"],
     # メモリ。DRAM ETF との乖離を見るための対になる構成銘柄
     "MEMORY": ["us_ai_memory", "MU"],
+    # AI設備投資を出す側。ここのショートが増えると投資減速懸念が意識されている可能性
+    "HYPERSCALER": ["us_hyperscaler_other", "MSFT", "GOOGL", "AMZN", "META", "CRWV"],
+    "MAG7": ["us_mega_cap", "NVDA"],
+    # AI半導体ロングの対に置かれやすい2群
+    "SAAS_AI_RISK": ["us_saas_ai_risk"],
+    "SAAS_AI_INFRA": ["us_saas_ai_infra"],
 }
 
 # --- ETF乖離を見る組み合わせ（ETF, 対になる構成銘柄バスケット）---
@@ -76,6 +116,39 @@ DIVERGENCE_PAIRS: list[tuple[str, str]] = [
     ("SMH", "SEMI20"),
     ("SOXX", "SEMI20"),
     ("DRAM", "MEMORY"),
+    ("IGV", "SAAS_AI_RISK"),
+]
+
+# --- ロング候補 / ショート候補のバスケット対 ---
+# ペアトレードで対に置かれやすい組み合わせ。spread = ショート側z20 − ロング側z20 で、
+# プラスが大きいほど「ショート側に売りが偏っている」＝その対の取引が入っている候補。
+# ⚠️ 空売り比率の水準そのものを引き算しているのではなく、
+#    それぞれが自分の過去分布からどれだけ離れたか（Zスコア）を比べている。
+BASKET_PAIRS: list[dict] = [
+    {
+        "name": "AI半導体 vs AI代替リスクSaaS",
+        "long": "AI_INFRA",
+        "short": "SAAS_AI_RISK",
+        "note": "AI設備投資の受益側を買い、AIに置き換えられる懸念のあるSaaSを売る対",
+    },
+    {
+        "name": "AI半導体 vs データ基盤SaaS",
+        "long": "AI_INFRA",
+        "short": "SAAS_AI_INFRA",
+        "note": "同じAI需要で動くとされる2群。差が開くとどちらかに偏りが出ている",
+    },
+    {
+        "name": "メモリ vs 半導体全体",
+        "long": "SEMI20",
+        "short": "MEMORY",
+        "note": "メモリ固有の需給か、半導体全体の動きかを切り分ける",
+    },
+    {
+        "name": "ハイパースケーラー vs AI半導体",
+        "long": "AI_INFRA",
+        "short": "HYPERSCALER",
+        "note": "設備投資を出す側と受け取る側。出す側だけ売られると投資減速懸念の可能性",
+    },
 ]
 
 # 銘柄→所属グループ（レポートの並び順にも使う）

@@ -78,6 +78,7 @@ from src.storage.db import (
 from src.storage.db import get_us_market_daily_df, get_us_short_volume_df
 from src.report.us_daily_report import build_daily_report
 from src.analyzer.us_flow_classifier import PATTERN_LABELS
+from config.us_universe import TICKER_GROUP
 
 
 AUTO_FETCH_DAYS = 5
@@ -1615,6 +1616,9 @@ def _render_us_flow_tab() -> None:
             div = "N/A" if d["divergence"] is None else f"{d['divergence']:+.2f}"
             st.markdown(f"- **{d['etf']}** 乖離 `{div}` … {d['interpretation']}")
 
+    # --- ペア比較（ロング候補 vs ショート候補） ---
+    _render_us_basket_pairs(report)
+
     # --- 今日の比較（横棒） ---
     _render_us_today_comparison(report)
 
@@ -1663,6 +1667,36 @@ def _render_us_flow_tab() -> None:
         st.markdown(report["markdown"])
 
 
+def _render_us_basket_pairs(report: dict) -> None:
+    """ロング候補とショート候補のZスコア差を並べる。"""
+    spreads = report.get("spreads") or []
+    if not spreads:
+        return
+
+    st.markdown("#### ペア比較（ロング候補 vs ショート候補）")
+    st.caption(
+        "空売り比率そのものの引き算ではなく、各群が自分の過去分布からどれだけ離れたか（Zスコア）の差です。"
+        "プラスが大きいほど、ショート候補側に売りが偏っています。"
+    )
+
+    rows = []
+    for sp in spreads:
+        rows.append({
+            "対": sp["name"],
+            "ロング候補": sp["long_basket"],
+            "ロング側z20": "N/A" if sp["long_z20"] is None else f"{sp['long_z20']:+.2f}",
+            "ショート候補": sp["short_basket"],
+            "ショート側z20": "N/A" if sp["short_z20"] is None else f"{sp['short_z20']:+.2f}",
+            "差": "N/A" if sp["spread"] is None else f"{sp['spread']:+.2f}",
+            "読み": sp["interpretation"],
+        })
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    notable = [s for s in spreads if s["spread"] is not None and abs(s["spread"]) > 1.5]
+    for sp in notable:
+        st.markdown(f"- **{sp['name']}**（差 {sp['spread']:+.2f}）… {sp['note']}")
+
+
 def _render_us_today_comparison(report: dict) -> None:
     """対象日の全銘柄を20日Zスコアの横棒で比較する。"""
     metrics = report.get("metrics")
@@ -1672,6 +1706,17 @@ def _render_us_today_comparison(report: dict) -> None:
     frame = metrics.dropna(subset=["z20"]).copy()
     if frame.empty:
         st.caption("Zスコアを算出できる銘柄がまだありません（履歴不足）。")
+        return
+
+    frame["グループ"] = frame["ticker"].map(TICKER_GROUP).fillna("その他")
+    groups = sorted(frame["グループ"].unique())
+    chosen = st.multiselect(
+        "表示するグループ（未選択なら全部）", groups, default=[], key="us_today_groups"
+    )
+    if chosen:
+        frame = frame[frame["グループ"].isin(chosen)]
+    if frame.empty:
+        st.info("選択したグループに該当する銘柄がありません。")
         return
 
     frame = frame.sort_values("z20")

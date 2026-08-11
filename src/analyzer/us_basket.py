@@ -20,7 +20,7 @@ import pandas as pd
 from loguru import logger
 
 from config.settings import US_ZSCORE_WINDOW_LONG, US_ZSCORE_WINDOW_SHORT
-from config.us_universe import BASKETS, basket_members
+from config.us_universe import BASKET_PAIRS, BASKETS, basket_members
 from src.analyzer.us_flow_analyzer import percentile_rank, zscore
 
 # ETF側だけ／個別側だけにショートが偏っていると見なす乖離の目安
@@ -198,6 +198,71 @@ def interpret_divergence(divergence: Optional[float]) -> str:
     if divergence < -DIVERGENCE_THRESHOLD:
         return "個別側のみショート増。テーマ内の銘柄選別が進行している候補"
     return "ETFと構成銘柄が連動。セクター全体が同方向"
+
+
+def compute_basket_spread(
+    short_df: pd.DataFrame,
+    long_basket: str,
+    short_basket: str,
+    target_date: str,
+) -> dict:
+    """ロング候補 / ショート候補の2バスケット間のZスコア差を返す。
+
+    spread = z20(ショート側) − z20(ロング側)。
+    プラスが大きいほど、ショート側に売りが偏っている＝その対の取引が入っている候補。
+
+    ⚠️ 比率そのものの引き算ではない。水準は銘柄群ごとに違う（SaaSは常時60%台、
+       半導体は40%台）ため、それぞれの過去分布からの乖離度（Zスコア）で比べる。
+    """
+    long_metrics = build_basket_metrics(short_df, long_basket)
+    short_metrics = build_basket_metrics(short_df, short_basket)
+
+    long_z = _latest_value(long_metrics, "z20", target_date)
+    short_z = _latest_value(short_metrics, "z20", target_date)
+
+    spread = None
+    if long_z is not None and short_z is not None:
+        spread = round(short_z - long_z, 4)
+
+    return {
+        "date": target_date,
+        "long_basket": long_basket,
+        "long_ratio": _latest_value(long_metrics, "ratio", target_date),
+        "long_z20": long_z,
+        "short_basket": short_basket,
+        "short_ratio": _latest_value(short_metrics, "ratio", target_date),
+        "short_z20": short_z,
+        "spread": spread,
+        "interpretation": interpret_spread(spread, long_basket, short_basket),
+    }
+
+
+def interpret_spread(
+    spread: Optional[float],
+    long_basket: str,
+    short_basket: str,
+) -> str:
+    """ペアの偏りの読み方を返す。いずれも候補であり断定ではない。"""
+    if spread is None:
+        return "判定不能（データ不足）"
+    if spread > DIVERGENCE_THRESHOLD:
+        return f"{short_basket}側に売りが偏っている。この対の取引が入っている候補"
+    if spread < -DIVERGENCE_THRESHOLD:
+        return f"{long_basket}側に売りが偏っている。想定と逆向きの偏り"
+    return "どちらにも偏っていない。ペアとしての動きは出ていない"
+
+
+def build_all_basket_spreads(short_df: pd.DataFrame, target_date: str) -> list[dict]:
+    """設定済みの全ペアについてスプレッドを返す（レポート用）。"""
+    results: list[dict] = []
+    for pair in BASKET_PAIRS:
+        record = compute_basket_spread(
+            short_df, pair["long"], pair["short"], target_date
+        )
+        record["name"] = pair["name"]
+        record["note"] = pair["note"]
+        results.append(record)
+    return results
 
 
 def build_all_basket_metrics(short_df: pd.DataFrame, target_date: str) -> list[dict]:

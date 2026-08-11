@@ -126,7 +126,11 @@ def main() -> None:
     _require_login()
 
     st.title("空売り比率インテリジェンス")
-    st.caption("JPX日次空売りフロー、業種別内訳、市場テーマ、Gemini AIレポートを一画面で確認します。")
+    st.caption(
+        "日本の業種別空売り比率と、米国AI関連株のショートフローを一画面で確認します。"
+        "日本は東証33業種の日次空売り比率とJPX内訳、市場テーマ判定、Gemini AIレポート。"
+        "米国はFINRA報告分の日次ショートボリュームを、銘柄自身の過去分布と比べて評価します。"
+    )
 
     selected_date = _sidebar()
     if not selected_date:
@@ -1562,8 +1566,9 @@ def _render_us_flow_tab() -> None:
     """米国個別株のショートフロー（FINRA報告分）を表示する。"""
     st.subheader("🇺🇸 米国ショートフロー（FINRA CNMS）")
     st.caption(
-        "半導体・AIインフラ・メモリの個別銘柄＋SMH/SOXX/DRAM/QQQ/SPY の日次ショートボリューム。"
-        "毎営業日 08:37 JST に自動取得します。"
+        "AI半導体・メモリ・AIインフラ・ハイパースケーラー・SaaS の個別銘柄と、"
+        "SMH / SOXX / DRAM / IGV / QQQ / SPY を毎営業日 08:37 JST に自動取得します。"
+        "水準は銘柄ごとに大きく違うため、絶対値ではなく銘柄自身の過去分布との比較（Zスコア）で判断します。"
     )
 
     try:

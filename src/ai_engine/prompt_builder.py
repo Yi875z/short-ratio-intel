@@ -3,6 +3,7 @@ Gemini API へのプロンプトを動的に構築するモジュール
 """
 import json
 from loguru import logger
+from src.macro_context.sector_price import format_quadrant
 from config.settings import CURRENT_MACRO_CONTEXT, MARKET_NEWS_AUTO_FETCH
 from config.signal_thresholds import SIGNAL_THRESHOLDS
 from src.knowledge.loader import load_effective_knowledge, load_external_knowledge
@@ -154,6 +155,20 @@ Markdownのコードブロック（```）は使わず、純粋なJSONのみを�
 - レポートでは「方向性売り主導」か「ヘッジ・裁定主導」かを明確に分類する
 - 価格規制ありが高くても「機関の確信的売り」と断定しない。マクロ、前日比、週次推移、業種特性を合わせて「方向性売り寄り」と表現する
 
+## 業種別の空売り比率×株価の4象限ルール（最重要）
+
+- 業種別データには、空売り比率の前日比（pt）と、同じ業種の株価指数の前日騰落率（%）が併記される。
+  **比率の水準だけで弱気と判断してはならない。必ず株価の反応と組み合わせて読む。**
+- 4象限の読み分け（いずれも可能性であり断定しない）:
+  - 比率上昇 × 株価上昇 = 売りが吸収されている。踏み上げ・押し目買い優勢の可能性。
+    ここを「高い空売り比率＝弱気」と読むのは誤り。売り方が劣勢な場面である可能性を先に検討する。
+  - 比率上昇 × 株価下落 = 方向性売り優勢の可能性。ただし規制なし構成比が高ければヘッジ・裁定の混入を疑う。
+  - 比率低下 × 株価上昇 = ショートカバー主導の可能性。新規の買いではなく買い戻しで上げている場合、
+    カバーが一巡すると上昇の勢いが続かない可能性を併記する。
+  - 比率低下 × 株価下落 = 売り圧力は後退しているが買いが不在の可能性。売り方の撤退を強気材料と即断しない。
+- 株価が「N/A」の業種は騰落率を取得できていない。その業種では象限を断定せず、比率のみの解釈に留める。
+- 主要テーマに該当する業種（半導体なら電気機器・精密機器など）は、必ずこの4象限の言葉で説明する。
+
 ## シグナル履歴の解釈ルール
 
 - 継続シグナルは単日ノイズより重視する。現在の設定値では{thresholds.persistent_signal_days}営業日以上継続したものは需給トレンドとして扱う
@@ -184,6 +199,17 @@ Markdownのコードブロック（```）は使わず、純粋なJSONのみを�
     return prompt
 
 
+def _safe_sector_returns(target_date: str) -> dict:
+    """業種別騰落率を取得する。失敗しても空辞書を返し、従来の組み立てを続ける。"""
+    try:
+        from src.macro_context.sector_price import returns_by_sector_code
+
+        return returns_by_sector_code(target_date)
+    except Exception as e:  # noqa: BLE001 株価が取れなくてもレポートは作る
+        logger.warning(f"業種別騰落率の取得に失敗（比率のみで続行）: {e}")
+        return {}
+
+
 def build_user_prompt(
     target_date: str,
     today_summary: dict,
@@ -196,10 +222,14 @@ def build_user_prompt(
     """
     当日データ・週次推移・異常値を組み合わせたユーザープロンプト。
     """
+    # 業種別株価指数の前日騰落率（取得できなければ従来どおり比率のみで組み立てる）
+    sector_returns = _safe_sector_returns(target_date)
+
     # セクターデータを整形
     sector_lines = []
     for s in today_summary.get("sector_data", []):
-        dod_str = f"{s['dod_change']:+.1f}pt" if s.get("dod_change") is not None else "N/A"
+        dod = s.get("dod_change")
+        dod_str = f"{dod:+.1f}pt" if dod is not None else "N/A"
         total_volume = s.get("total_volume_va", 0) or 0
         short_with = s.get("shrt_with_res_va", 0) or 0
         short_without = s.get("shrt_no_res_va", 0) or 0
@@ -207,10 +237,18 @@ def build_user_prompt(
         with_ratio = short_with / total_volume * 100 if total_volume else 0
         without_ratio = short_without / total_volume * 100 if total_volume else 0
         without_share = short_without / total_short * 100 if total_short else 0
+
+        price = sector_returns.get(s.get("s33_code"))
+        change_pct = price.get("change_pct") if price else None
+        price_str = f"株価{change_pct:+.2f}%" if change_pct is not None else "株価N/A"
+        quadrant = format_quadrant(dod, change_pct)
+
         sector_lines.append(
             f"{s['sector_name']:20s}: 総空売り{s['short_ratio_pct']:5.1f}% ({dod_str}) / "
+            f"{price_str} / "
             f"規制あり{with_ratio:4.1f}% / 規制なし{without_ratio:4.1f}% "
             f"(規制なし構成比{without_share:4.1f}%) / {s['zone_label']}"
+            + (f" / {quadrant}" if quadrant else "")
         )
     sector_table = "\n".join(sector_lines)
 
@@ -377,7 +415,7 @@ def build_user_prompt(
 【週次推移（直近）】:
 {weekly_summary if weekly_summary else '  データなし'}
 
-【業種別データ（高い順、JPX内訳付き）】:
+【業種別データ（高い順、JPX内訳＋株価騰落率＋4象限）】:
 {sector_table}
 
 【検知された異常値】:

@@ -75,7 +75,11 @@ from src.storage.db import (
 )
 # 米国ショートフロー（US-P2）。日本側の描画とは独立しており、
 # データが無くてもこのタブ内で完結して案内を出す。
-from src.storage.db import get_us_market_daily_df, get_us_short_volume_df
+from src.storage.db import (
+    get_us_market_daily_df,
+    get_us_short_interest_df,
+    get_us_short_volume_df,
+)
 from src.report.us_daily_report import build_daily_report
 from src.analyzer.us_flow_classifier import PATTERN_LABELS
 from config.us_universe import TICKER_GROUP, ai_category, japanese_name
@@ -1548,7 +1552,11 @@ def _apply_style() -> None:
 @st.cache_data(ttl=600, show_spinner=False)
 def _cached_us_flow_frames():
     """米国ショートボリュームと日足を10分キャッシュで読む。"""
-    return get_us_short_volume_df(), get_us_market_daily_df()
+    return (
+        get_us_short_volume_df(),
+        get_us_market_daily_df(),
+        get_us_short_interest_df(latest_only=True),
+    )
 
 
 @st.cache_data(ttl=600, show_spinner="米国フロー指標を計算中…")
@@ -1558,8 +1566,8 @@ def _cached_us_report(target_date: str):
     Streamlit はウィジェット操作のたびにスクリプト全体を再実行するため、
     キャッシュしないと銘柄を切り替えるだけで毎回フル計算が走る（実測2.3秒）。
     """
-    short_df, price_df = _cached_us_flow_frames()
-    return build_daily_report(target_date, short_df, price_df)
+    short_df, price_df, si_df = _cached_us_flow_frames()
+    return build_daily_report(target_date, short_df, price_df, short_interest_df=si_df)
 
 
 def _render_us_flow_tab() -> None:
@@ -1572,7 +1580,7 @@ def _render_us_flow_tab() -> None:
     )
 
     try:
-        short_df, price_df = _cached_us_flow_frames()
+        short_df, price_df, _ = _cached_us_flow_frames()
     except Exception as e:  # noqa: BLE001 米国データの不調で日本側の画面を巻き込まない
         st.warning(f"米国データの読み込みに失敗しました: {e}")
         return
@@ -1625,6 +1633,9 @@ def _render_us_flow_tab() -> None:
             div = "N/A" if d["divergence"] is None else f"{d['divergence']:+.2f}"
             st.markdown(f"- **{d['etf']}** 乖離 `{div}` … {d['interpretation']}")
 
+    # --- 空売り残高（隔週） ---
+    _render_us_short_interest(report)
+
     # --- ペア比較（ロング候補 vs ショート候補） ---
     _render_us_basket_pairs(report)
 
@@ -1674,6 +1685,38 @@ def _render_us_flow_tab() -> None:
 
     with st.expander("レポート全文（Markdown）", expanded=False):
         st.markdown(report["markdown"])
+
+
+def _render_us_short_interest(report: dict) -> None:
+    """空売り残高を基準日・経過日数つきで表示する。"""
+    view = report.get("short_interest") or {}
+    rows = view.get("rows") or []
+
+    st.markdown("#### 空売り残高（隔週・未決済のまま残っている空売り）")
+    if not rows:
+        st.info(
+            "空売り残高の取り込みがまだありません。"
+            "日次パイプラインを1回実行すると取り込まれます。"
+        )
+        return
+
+    elapsed = view.get("days_elapsed")
+    cols = st.columns(3)
+    cols[0].metric("基準日", view["settlement_date"])
+    cols[1].metric("基準日からの経過", "N/A" if elapsed is None else f"{elapsed}日")
+    cols[2].metric("対象銘柄", f"{len(rows)}銘柄")
+
+    st.caption(view.get("note", ""))
+
+    frame = pd.DataFrame([{
+        "銘柄": r["ticker"],
+        "日本語名": r["name_ja"] or "N/A",
+        "残高(株)": "N/A" if r["current_short_position"] is None else f"{int(r['current_short_position']):,}",
+        "前回(株)": "N/A" if r["previous_short_position"] is None else f"{int(r['previous_short_position']):,}",
+        "前回比": "N/A" if r["change_percent"] is None else f"{r['change_percent']:+.2f}%",
+        "買い戻し日数": "N/A" if r["days_to_cover"] is None else f"{r['days_to_cover']:.2f}",
+    } for r in rows])
+    st.dataframe(frame, use_container_width=True, hide_index=True)
 
 
 def _render_us_basket_pairs(report: dict) -> None:

@@ -26,6 +26,7 @@ from src.storage.models import (
     MarketThemeSnapshot,
     ShortRatioDaily,
     UsMarketDaily,
+    UsShortInterest,
     UsShortVolumeDaily,
 )
 
@@ -684,7 +685,13 @@ def get_house_view() -> Optional[tuple[str, datetime]]:
 # （JP=業種別・売買代金JPY / US=銘柄別・株数。単位も粒度も異なる）。
 # ==================================================================
 
-def _apply_bulk_upsert(session, model, rows: list[dict], key_fields: tuple[str, ...]) -> int:
+def _apply_bulk_upsert(
+    session,
+    model,
+    rows: list[dict],
+    key_fields: tuple[str, ...],
+    date_field: str = "date",
+) -> int:
     """既存行を1回のSELECTで引き当て、まとめてINSERT/UPDATEする。
 
     1行ずつ SELECT+INSERT すると Supabase 相手では往復遅延が支配的になり、
@@ -700,10 +707,11 @@ def _apply_bulk_upsert(session, model, rows: list[dict], key_fields: tuple[str, 
         deduped[tuple(row[field] for field in key_fields)] = row
     rows = list(deduped.values())
 
-    dates = {row["date"] for row in rows}
+    # 引き当て対象を日付で絞り込み、テーブル全体の走査を避ける
+    dates = {row[date_field] for row in rows}
     existing_stmt = select(
         model.id, *[getattr(model, field) for field in key_fields]
-    ).where(model.date.in_(dates))
+    ).where(getattr(model, date_field).in_(dates))
     existing_ids = {
         tuple(record[1:]): record[0]
         for record in session.execute(existing_stmt).all()
@@ -918,3 +926,95 @@ def get_us_market_daily_df(
         "adj_close": r.adj_close,
         "market_volume": r.market_volume,
     } for r in rows])
+
+
+def upsert_us_short_interest_records(records: list[dict]) -> int:
+    """米国の空売り残高をUPSERTする（隔週更新なので件数は少ない）。"""
+    if not records:
+        return 0
+
+    now = datetime.utcnow()
+    rows: list[dict] = []
+    for r in records:
+        settlement_date = r.get("SettlementDate")
+        ticker = r.get("Ticker")
+        if not settlement_date or not ticker:
+            logger.warning(f"空売り残高の必須項目が欠落: {r}")
+            continue
+        rows.append({
+            "settlement_date": settlement_date,
+            "ticker": ticker,
+            "issue_name": r.get("IssueName"),
+            "current_short_position": r.get("CurrentShortPosition"),
+            "previous_short_position": r.get("PreviousShortPosition"),
+            "average_daily_volume": r.get("AverageDailyVolume"),
+            "days_to_cover": r.get("DaysToCover"),
+            "change_percent": r.get("ChangePercent"),
+            "source": r.get("Source") or "UNKNOWN",
+            "ingested_at": now,
+        })
+
+    engine = get_db_engine()
+    with Session(engine) as session:
+        saved = _apply_bulk_upsert(
+            session, UsShortInterest, rows, ("settlement_date", "ticker", "source"),
+            date_field="settlement_date",
+        )
+        session.commit()
+
+    logger.info(f"米国空売り残高 {saved}件を保存しました")
+    return saved
+
+
+def get_us_short_interest_df(
+    settlement_date: Optional[str] = None,
+    tickers: Optional[list[str]] = None,
+    latest_only: bool = False,
+) -> pd.DataFrame:
+    """米国の空売り残高をDataFrameで返す。"""
+    engine = get_db_engine()
+
+    with Session(engine) as session:
+        if latest_only and not settlement_date:
+            settlement_date = session.execute(
+                select(UsShortInterest.settlement_date)
+                .order_by(desc(UsShortInterest.settlement_date))
+                .limit(1)
+            ).scalar_one_or_none()
+            if not settlement_date:
+                return pd.DataFrame()
+
+        stmt = select(UsShortInterest).order_by(
+            UsShortInterest.settlement_date, UsShortInterest.ticker
+        )
+        if settlement_date:
+            stmt = stmt.where(UsShortInterest.settlement_date == settlement_date)
+        if tickers:
+            stmt = stmt.where(UsShortInterest.ticker.in_(tickers))
+
+        rows = session.execute(stmt).scalars().all()
+
+    if not rows:
+        return pd.DataFrame()
+
+    return pd.DataFrame([{
+        "settlement_date": r.settlement_date,
+        "ticker": r.ticker,
+        "issue_name": r.issue_name,
+        "current_short_position": r.current_short_position,
+        "previous_short_position": r.previous_short_position,
+        "average_daily_volume": r.average_daily_volume,
+        "days_to_cover": r.days_to_cover,
+        "change_percent": r.change_percent,
+    } for r in rows])
+
+
+def get_us_short_interest_latest_date() -> Optional[str]:
+    """保存済み空売り残高の最新基準日を返す。"""
+    engine = get_db_engine()
+    with Session(engine) as session:
+        return session.execute(
+            select(UsShortInterest.settlement_date)
+            .order_by(desc(UsShortInterest.settlement_date))
+            .limit(1)
+        ).scalar_one_or_none()

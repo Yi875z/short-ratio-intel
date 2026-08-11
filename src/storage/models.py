@@ -233,3 +233,35 @@ class UsMarketDaily(Base):
     def __repr__(self) -> str:
         close = f"{self.close:.2f}" if self.close is not None else "N/A"
         return f"<UsMarketDaily date={self.date} ticker={self.ticker} close={close}>"
+
+
+class UsShortInterest(Base):
+    """米国の空売り残高（隔週。FINRA Consolidated Short Interest）
+
+    ⚠️ 日次のフロー（UsShortVolumeDaily）とは別概念。混ぜて計算してはならない。
+       こちらは基準日時点で未決済のまま残っている空売りの株数。
+    ⚠️ 公表は基準日から2週間前後遅れる。利用側には必ず基準日と経過日数を示すこと。
+    """
+
+    __tablename__ = "us_short_interest"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    settlement_date = Column(String(10), nullable=False, index=True)   # 基準日 YYYY-MM-DD
+    ticker = Column(String(16), nullable=False, index=True)
+    issue_name = Column(String(120), nullable=True)
+
+    current_short_position = Column(Float, nullable=True)    # 今回の残高（株数）
+    previous_short_position = Column(Float, nullable=True)   # 前回の残高
+    average_daily_volume = Column(Float, nullable=True)      # 平均日次出来高
+    days_to_cover = Column(Float, nullable=True)             # 買い戻しに要する日数
+    change_percent = Column(Float, nullable=True)            # 前回比(%)
+
+    source = Column(String(32), nullable=False)
+    ingested_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("settlement_date", "ticker", "source", name="uq_us_si_date_ticker_source"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<UsShortInterest {self.settlement_date} {self.ticker} {self.current_short_position}>"

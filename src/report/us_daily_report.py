@@ -23,6 +23,7 @@ from src.analyzer.us_basket import (
     compute_divergence,
 )
 from src.analyzer.us_flow_analyzer import build_flow_metrics
+from src.data_fetcher.finra_short_interest_client import days_since_settlement
 from src.analyzer.us_flow_classifier import (
     PATTERN_LABELS,
     classify_flow_metrics,
@@ -177,11 +178,58 @@ def describe_day(report: dict) -> str:
     return "".join(lines)
 
 
+def build_short_interest_view(
+    short_interest_df: Optional[pd.DataFrame],
+    target_date: str,
+) -> dict:
+    """空売り残高を「いつ時点の数字か」を添えた形に整える。
+
+    残高は基準日時点のスナップショットで、公表は2週間前後遅れる。
+    日次のフローと同じ画面に並べる以上、鮮度を必ず明示する（QCルール2）。
+    """
+    empty = {"settlement_date": None, "days_elapsed": None, "rows": [], "note": ""}
+    if short_interest_df is None or short_interest_df.empty:
+        return empty
+
+    settlement_date = str(short_interest_df["settlement_date"].max())
+    latest = short_interest_df[short_interest_df["settlement_date"] == settlement_date]
+    if latest.empty:
+        return empty
+
+    elapsed = days_since_settlement(settlement_date, as_of=target_date)
+
+    rows = []
+    for _, r in latest.sort_values("current_short_position", ascending=False).iterrows():
+        rows.append({
+            "ticker": r["ticker"],
+            "name_ja": japanese_name(r["ticker"]),
+            "current_short_position": r.get("current_short_position"),
+            "previous_short_position": r.get("previous_short_position"),
+            "change_percent": r.get("change_percent"),
+            "days_to_cover": r.get("days_to_cover"),
+            "average_daily_volume": r.get("average_daily_volume"),
+        })
+
+    note = (
+        f"基準日 {settlement_date} 時点の残高です"
+        + (f"（レポート対象日 {target_date} から{elapsed}日前）。" if elapsed is not None else "。")
+        + "残高は原則として月2回しか更新されず、公表も基準日から2週間前後遅れます。"
+        "当日の売買の流れ（フロー）とは別の数字なので、足し引きや直接の比較はできません。"
+    )
+    return {
+        "settlement_date": settlement_date,
+        "days_elapsed": elapsed,
+        "rows": rows,
+        "note": note,
+    }
+
+
 def build_daily_report(
     target_date: str,
     short_df: pd.DataFrame,
     price_df: Optional[pd.DataFrame] = None,
     universe: Optional[list[str]] = None,
+    short_interest_df: Optional[pd.DataFrame] = None,
 ) -> dict:
     """指定日の日次レポートを組み立てる。
 
@@ -221,6 +269,7 @@ def build_daily_report(
     ]
 
     spreads = build_all_basket_spreads(history, target_date)
+    short_interest = build_short_interest_view(short_interest_df, target_date)
 
     alerts = today[today["z20"].abs() >= US_ZSCORE_ALERT_THRESHOLD]
     pattern_counts = summarize_patterns(today)
@@ -232,7 +281,8 @@ def build_daily_report(
     }
 
     markdown = _render_markdown(
-        target_date, today, baskets, divergences, spreads, alerts, pattern_counts, coverage
+        target_date, today, baskets, divergences, spreads, alerts,
+        pattern_counts, coverage, short_interest,
     )
     highlights = _render_highlights(target_date, baskets, divergences, alerts, coverage)
 
@@ -244,6 +294,7 @@ def build_daily_report(
         "baskets": baskets,
         "divergences": divergences,
         "spreads": spreads,
+        "short_interest": short_interest,
         "pattern_counts": pattern_counts,
         "coverage": coverage,
         "metrics": today,
@@ -269,6 +320,7 @@ def _empty_report(target_date: str, expected: list[str]) -> dict:
         "baskets": [],
         "divergences": [],
         "spreads": [],
+        "short_interest": {"settlement_date": None, "rows": []},
         "pattern_counts": {},
         "coverage": {"expected": len(expected), "present": 0, "missing": sorted(expected)},
         "metrics": pd.DataFrame(),
@@ -286,6 +338,7 @@ def _render_markdown(
     alerts: pd.DataFrame,
     pattern_counts: dict,
     coverage: dict,
+    short_interest: Optional[dict] = None,
 ) -> str:
     lines: list[str] = [
         f"# US Short Flow Daily - {target_date} (FINRA CNMS)",
@@ -359,7 +412,31 @@ def _render_markdown(
     else:
         lines.append("算出できませんでした。")
 
-    lines += ["", f"## 4. アラート（|z20| ≧ {US_ZSCORE_ALERT_THRESHOLD}）", ""]
+    lines += ["", "## 4. 空売り残高（隔週・基準日つき）", ""]
+    si = short_interest or {}
+    if si.get("rows"):
+        elapsed = si.get("days_elapsed")
+        lines.append(
+            f"- 基準日: **{si['settlement_date']}**"
+            + (f"（対象日 {target_date} から **{elapsed}日経過**）" if elapsed is not None else "")
+        )
+        lines.append(f"- {si['note']}")
+        lines.append("")
+        lines += [
+            "| 銘柄 | 日本語名 | 残高(株) | 前回(株) | 前回比 | 買い戻し日数 |",
+            "|---|---|---|---|---|---|",
+        ]
+        for r in si["rows"]:
+            cur = "N/A" if r["current_short_position"] is None else f"{int(r['current_short_position']):,}"
+            prev = "N/A" if r["previous_short_position"] is None else f"{int(r['previous_short_position']):,}"
+            lines.append(
+                f"| {r['ticker']} | {r['name_ja'] or 'N/A'} | {cur} | {prev} | "
+                f"{_fmt(r['change_percent'], sign=True)}% | {_fmt(r['days_to_cover'])}日 |"
+            )
+    else:
+        lines.append("空売り残高の取り込みがまだありません。")
+
+    lines += ["", f"## 5. アラート（|z20| ≧ {US_ZSCORE_ALERT_THRESHOLD}）", ""]
     if alerts.empty:
         lines.append("該当なし。")
     else:
@@ -373,7 +450,7 @@ def _render_markdown(
         for _, r in alerts.iterrows():
             lines.append(_render_row(r))
 
-    lines += ["", "## 5. パターン集計", ""]
+    lines += ["", "## 6. パターン集計", ""]
     if pattern_counts:
         for tag, count in sorted(pattern_counts.items(), key=lambda kv: -kv[1]):
             lines.append(f"- {PATTERN_LABELS.get(tag, tag)}（{tag}）: {count}銘柄")
@@ -382,7 +459,7 @@ def _render_markdown(
 
     lines += [
         "",
-        "## 6. 全銘柄",
+        "## 7. 全銘柄",
         "",
         "| 銘柄 | 日本語名 | AI種別 | ショート比率 | 20日Zスコア | 60日Zスコア | 60日順位% | 騰落率 | 終値位置 | 出来高比 | パターン候補 |",
         "|---|---|---|---|---|---|---|---|---|---|---|",
@@ -392,12 +469,13 @@ def _render_markdown(
 
     lines += [
         "",
-        "## 7. 注記",
+        "## 8. 注記",
         "",
         "- 本レポートのパターンはすべて**候補**です。単日のフローで方向性を断定しません。",
         "- 比率は必ず同一ソース内（FINRA報告分の分子 ÷ FINRA報告分の分母）で算出しています。",
         "- 絶対水準ではなく、銘柄自身の過去分布に対する相対位置（z20 / z60 / pct60）で判断してください。",
-        "- 持ち越しショートの確認には Short Interest（隔週の残高）が必要です。取り込みは US-P3 で対応予定。",
+        "- 持ち越しショートの確認には Short Interest（隔週の残高）を使います。上の第4節に基準日つきで掲載しています。",
+        "- 残高は基準日から2週間前後遅れて公表されます。当日のフローと同じ鮮度ではない点に注意してください。",
         "",
     ]
     return "\n".join(lines)

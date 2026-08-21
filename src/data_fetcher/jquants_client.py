@@ -2,6 +2,8 @@
 空売り比率クライアント
 stock-marketdata.com スクレイピング版
 """
+import re
+
 import requests
 from bs4 import BeautifulSoup
 from loguru import logger
@@ -10,42 +12,56 @@ from config.sectors import SECTORS_S33
 
 _SCRAPE_URL = "https://stock-marketdata.com/karauri.html"
 
-# サイト表記（中点なし・省略形） → S33コード
-_SITE_NAME_TO_S33: dict[str, str] = {
-    "水産農林業":      "0050",
-    "鉱業":           "1050",
-    "建設業":         "2050",
-    "食料品":         "3050",
-    "繊維製品":       "3100",
-    "パルプ紙":       "3150",
-    "化学":           "3200",
-    "医薬品":         "3250",
-    "石油石炭製品":    "3300",
-    "ゴム製品":       "3350",
-    "ガラス土石":     "3400",
-    "鉄鋼":          "3450",
-    "非鉄金属":       "3500",
-    "金属製品":       "3550",
-    "機械":           "3600",
-    "電気機器":       "3650",
-    "輸送用機器":     "3700",
-    "精密機器":       "3750",
-    "その他製品":     "3800",
-    "電気ガス業":     "4050",
-    "陸運業":         "5050",
-    "海運業":         "5100",
-    "空運業":         "5150",
-    "倉庫運輸関連業":  "5200",
-    "情報通信業":     "5250",
-    "卸売業":         "6050",
-    "小売業":         "6100",
-    "銀行業":         "7050",
-    "証券商品先物":    "7100",
-    "保険業":         "7150",
-    "その他金融業":    "7200",
-    "不動産業":       "8050",
-    "サービス業":     "9050",
+# 取得元は業種名の表記を予告なく変える。2026-08 の変更では「水産農林業」→「水産・農林業」、
+# 「証券商品先物」→「証券、商品先物取引業」のように中点・読点が入り、完全一致で引いていた
+# 旧マッピングが全滅して3営業日ぶんの欠測を出した。区切り文字を落とした正規化名で引くことで
+# 中点あり・なしの両表記を吸収する。
+_NAME_SEPARATORS = "・、･, 　	"
+
+
+def _normalize_sector_name(name: str) -> str:
+    """業種名から区切り文字と空白を除いた、比較用の文字列を返す。"""
+    for ch in _NAME_SEPARATORS:
+        name = name.replace(ch, "")
+    return name.strip()
+
+
+# 正規化しても canonical 名（config/sectors.py）と一致しない省略表記だけを別名で補う。
+_LEGACY_SITE_ALIASES: dict[str, str] = {
+    "ガラス土石": "3400",     # canonical: ガラス・土石製品
+    "証券商品先物": "7100",   # canonical: 証券、商品先物取引業
 }
+
+_S33_BY_NORMALIZED_NAME: dict[str, str] = {
+    _normalize_sector_name(name): code
+    for code, name in SECTORS_S33.items()
+    if code != "9999"  # 「その他（33業種外）」は取得元の列に存在しない
+}
+_S33_BY_NORMALIZED_NAME.update(_LEGACY_SITE_ALIASES)
+
+
+def _lookup_s33(header: str) -> str | None:
+    """テーブルのヘッダー表記から S33 コードを引く（未知の表記なら None）。"""
+    return _S33_BY_NORMALIZED_NAME.get(_normalize_sector_name(header))
+
+
+# 日付セルの表記も 2026-08 に "2026/08/21" → "2026年8月21日" へ変わった。両方受ける。
+_DATE_PATTERNS = (
+    re.compile(r"^(\d{4})年(\d{1,2})月(\d{1,2})日$"),
+    re.compile(r"^(\d{4})[/-](\d{1,2})[/-](\d{1,2})$"),
+)
+
+
+def _parse_table_date(raw: str) -> str | None:
+    """日付セルを "YYYY-MM-DD" に正規化する（解釈できなければ None）。"""
+    raw = raw.strip()
+    for pattern in _DATE_PATTERNS:
+        matched = pattern.match(raw)
+        if matched:
+            year, month, day = matched.groups()
+            return f"{year}-{int(month):02d}-{int(day):02d}"
+    return None
+
 
 _HEADERS = {
     "User-Agent": (
@@ -157,11 +173,11 @@ class JQuantsClient:
 
         # 列インデックス → S33コード（日付列 index=0 を除く）
         col_s33 = {
-            i: _SITE_NAME_TO_S33[h]
+            i: code
             for i, h in enumerate(headers)
-            if i > 0 and h in _SITE_NAME_TO_S33
+            if i > 0 and (code := _lookup_s33(h))
         }
-        unknown = [h for i, h in enumerate(headers) if i > 0 and h not in _SITE_NAME_TO_S33]
+        unknown = [h for i, h in enumerate(headers) if i > 0 and not _lookup_s33(h)]
         if unknown:
             logger.warning(f"マッピング未定義の業種名: {unknown}")
 
@@ -170,7 +186,9 @@ class JQuantsClient:
             cells = [td.get_text(strip=True) for td in tr.select("td")]
             if not cells:
                 continue
-            norm_date = cells[0].replace("/", "-")  # "2026/04/24" → "2026-04-24"
+            norm_date = _parse_table_date(cells[0])
+            if norm_date is None:
+                continue
 
             day_records = []
             for col_idx, s33 in col_s33.items():
@@ -225,8 +243,12 @@ class JQuantsClient:
             except ValueError:
                 pass
 
+            norm_date = _parse_table_date(cells[0])
+            if norm_date is None:
+                continue
+
             result.append({
-                "Date": cells[0].replace("/", "-"),
+                "Date": norm_date,
                 "ShortRatioPct": ratio,
                 "DodChange": dod_change,
                 "SellExShortVa": 0,
@@ -244,8 +266,7 @@ class JQuantsClient:
         for table in soup.find_all("table"):
             ths = table.select("thead th")
             if len(ths) >= 2 and ths[0].get_text(strip=True) == "日付":
-                second = ths[1].get_text(strip=True)
-                if second in _SITE_NAME_TO_S33:
+                if _lookup_s33(ths[1].get_text(strip=True)):
                     return table
         return None
 
@@ -254,7 +275,12 @@ class JQuantsClient:
         """東証全体の時系列テーブルを探す。"""
         for table in soup.find_all("table"):
             headers = [th.get_text(strip=True) for th in table.select("thead th")]
-            if headers[:4] == ["日付", "空売り比率", "前日比", "売買代金合計"]:
+            if len(headers) < 4:
+                continue
+            if (
+                headers[:3] == ["日付", "空売り比率", "前日比"]
+                and headers[3].startswith("売買代金")
+            ):
                 return table
         return None
 

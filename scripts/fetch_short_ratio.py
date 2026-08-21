@@ -88,6 +88,16 @@ def _step_fetch(target_date: str | None, days: int) -> dict:
             target_date=result.get("target_date"),
         )
     )
+    # 取得0件でも後段（テーマ判定・レポート生成）はDBの既存データで走り切ってしまうため、
+    # そのままだとワークフローが success で終わり欠測が無通知になる（2026-08 に3営業日欠測）。
+    # 取得元の表記変更を当日中に気づけるよう、ここで明示的に落とす。
+    if not result.get("saved_sector"):
+        raise RuntimeError(
+            "空売り比率の業種別データを1件も取得できませんでした "
+            f"(market={result.get('saved_market')})。"
+            "stock-marketdata.com と JPX公表PDF の双方が取得不能か、"
+            "公開元の表記変更が疑われます。"
+        )
     return result
 
 

@@ -75,12 +75,15 @@
 - **技術スタック**: Python 3.12（Streamlit Community Cloud 固定。新しすぎる Python は固定依存の wheel が無くビルド失敗する）/
   pandas 2.2.0 / SQLAlchemy 2.0.27 / psycopg2-binary / pydantic 2.6.0 / loguru / feedparser / Streamlit / Gemini API / pytest
 - **起動コマンド**: `streamlit run app/streamlit_app.py`（本番は Streamlit Community Cloud・bcrypt ログイン付き。main へ push すると自動再デプロイ）
-- **テストコマンド**: `pytest`（基準: 全178件パス。2026-08-11 実測 8秒。空売り残高・業種別騰落率のテスト追加）
+- **テストコマンド**: `pytest`（基準: 全213件パス。2026-08-21 実測 14秒。空売り比率スクレイパーのパース回帰テストを追加）
 - **DBスキーマの正**: `src/storage/db.py` の `get_engine()` が `DATABASE_URL` ありで Supabase(PostgreSQL)、無しでローカル SQLite に切替。
   スキーマ定義の正本ファイルは未確認（`src/storage/` 配下を参照）
 - **データソースと取得条件**:
-  - 空売り比率: stock-marketdata.com のスクレイパー（`jquants_client.py` — **名前に反し J-Quants API は使わない**・認証鍵不要）
-  - JPX公開PDF（`jpx_pdf_client.py`）
+  - 空売り比率: JPX公開PDF（`jpx_pdf_client.py`）が第一候補、stock-marketdata.com のスクレイパー
+    （`jquants_client.py` — **名前に反し J-Quants API は使わない**・認証鍵不要）がフォールバック。
+    取得元の業種名・日付・列見出しの表記は予告なく変わる（2026-08 に3点同時に変わり3営業日欠測）ため、
+    HTMLの契約と復旧手順は `docs/data_sources/short_ratio_karauri.md` を正とする。
+    **取得0件はパイプラインを非ゼロ終了させる**（無通知の欠測を防ぐため、fail-soft にしない）
   - RSSニュース（feedparser・ロイター/日経/Bloomberg/Google News）
   - 業種別株価指数の騰落率: nikkei225jp.com の履歴JS（`src/macro_context/sector_price.py`）。
     値に業種名が付かず**並び順のみが同定手段**のため、仕様は `docs/data_sources/sector_price_index.md` を正とする

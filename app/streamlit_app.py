@@ -673,8 +673,12 @@ def fetch_and_store_recent_short_ratio(days: int = AUTO_FETCH_DAYS) -> dict:
 
     fallback_sector_records = scraper.get_recent_days(days)
     fallback_market_records = scraper.get_market_recent_days(days)
+    # 対象日リストをスクレイパー任せにすると、先方のHTML変更で候補が空になった瞬間に
+    # 生きている JPX 公式PDF まで一度も参照されず、静かに全欠測になる（2026-08 に3営業日欠測）。
+    # 公式PDFの公開日と突き合わせ、どちらか片方が生きていれば取得を継続できるようにする。
     candidate_dates = sorted(
-        {record["Date"] for record in fallback_sector_records},
+        {record["Date"] for record in fallback_sector_records}
+        | set(jpx.get_available_dates(days)),
         reverse=True,
     )[:days]
 

@@ -14,6 +14,8 @@ from loguru import logger
 
 from config.sectors import SECTORS_S33
 
+_DATE_KEY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
 _INDEX_URL = "https://www.jpx.co.jp/markets/statistics-equities/short-selling/"
 _HOST = "https://www.jpx.co.jp"
 
@@ -157,6 +159,23 @@ class JPXShortSellingClient:
             return []
 
         return records
+
+    def get_available_dates(self, limit: int | None = None) -> list[str]:
+        """一覧ページに業種別PDFが載っている日付を新しい順に返す。
+
+        取得対象日の候補を stock-marketdata スクレイパーだけに頼ると、先方のHTML変更で
+        候補が空になった瞬間に、生きているこのPDF経路まで一度も呼ばれなくなる。
+        公式側からも候補日を出せるようにしておくための入口。
+        """
+        dates = sorted(
+            {
+                key
+                for key, kind in self._get_pdf_url_map()
+                if kind == "g" and _DATE_KEY_RE.match(key)
+            },
+            reverse=True,
+        )
+        return dates[:limit] if limit else dates
 
     def _download_pdf(self, target_date: str, kind: str) -> bytes | None:
         yymmdd = datetime.strptime(target_date, "%Y-%m-%d").strftime("%y%m%d")

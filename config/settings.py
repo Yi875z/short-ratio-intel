@@ -22,13 +22,18 @@ JQUANTS_API_KEY: str = os.getenv("JQUANTS_API_KEY", "")
 JQUANTS_BASE_URL: str = "https://api.jquants.com"
 
 # ---- Gemini ----
-# モデルは .env の GEMINI_MODEL で切替可能（未設定時は gemini-3.6-flash）
+# モデルは .env の GEMINI_MODEL で切替可能（未設定時は gemini-3.7-flash）
 # Free Tier の 20 req/日は GenerateRequestsPerDayPerProjectPerModel-FreeTier、
 # つまり「モデル単位」の枠。枯渇時はモデルを変えれば別枠で即復旧できる。
-# 2026-07-25: JPX_Analysis_System で 3.5-flash が枯渇し 429 になった事例を受けて 3.6-flash へ移行
-# （退避先は gemini-3.5-flash。どちらも本キーで動作確認済み）。
+# 2026-07-25: JPX_Analysis_System で 3.5-flash が枯渇し 429 になった事例を受けて 3.6-flash へ移行。
+# 2026-08-23: 3.7-flash へ移行（退避先は gemini-3.6-flash）。
+#   3.7 は 2026-08-13 GA だが翌 08-14 は 504 連発で一度不採用にした経緯がある。
+#   08-23 に本番同条件（system=67.8K字 / response_mime_type=application/json /
+#   max_output_tokens=32768）で再検証し、API 85.5秒・ReadingReport のスキーマ検証
+#   通過を確認して採用。※JSON経路なので「200が返った」だけでは不十分。
+#   必ずスキーマ検証（_parse_response）まで通してから採用すること。
 GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.7-flash")
 
 # ---- Slack ----
 SLACK_WEBHOOK_URL: str = os.getenv("SLACK_WEBHOOK_URL", "")

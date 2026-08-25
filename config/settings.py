@@ -22,18 +22,40 @@ JQUANTS_API_KEY: str = os.getenv("JQUANTS_API_KEY", "")
 JQUANTS_BASE_URL: str = "https://api.jquants.com"
 
 # ---- Gemini ----
-# モデルは .env の GEMINI_MODEL で切替可能（未設定時は gemini-3.7-flash）
+# モデルは .env の GEMINI_MODEL で切替可能（未設定時は gemini-3.6-flash）
 # Free Tier の 20 req/日は GenerateRequestsPerDayPerProjectPerModel-FreeTier、
 # つまり「モデル単位」の枠。枯渇時はモデルを変えれば別枠で即復旧できる。
 # 2026-07-25: JPX_Analysis_System で 3.5-flash が枯渇し 429 になった事例を受けて 3.6-flash へ移行。
-# 2026-08-23: 3.7-flash へ移行（退避先は gemini-3.6-flash）。
-#   3.7 は 2026-08-13 GA だが翌 08-14 は 504 連発で一度不採用にした経緯がある。
-#   08-23 に本番同条件（system=67.8K字 / response_mime_type=application/json /
-#   max_output_tokens=32768）で再検証し、API 85.5秒・ReadingReport のスキーマ検証
-#   通過を確認して採用。※JSON経路なので「200が返った」だけでは不十分。
-#   必ずスキーマ検証（_parse_response）まで通してから採用すること。
+# 2026-08-23: 3.7-flash へ移行したが、2026-08-24 の本番で破綻したため 3.6-flash へ差し戻した。
+#   3.7 は単発検証では 85.5秒で通るが、本番負荷（system=67.8K字 /
+#   response_mime_type=application/json / max_output_tokens=32768）では
+#   google-api-core の既定デッドライン 600秒を超えて 504 になる。しかも SDK は
+#   その 600秒のあいだ内部でリクエストを投げ直すため、1回の呼び出しで日次枠 20 を
+#   食い潰し、後続の定時実行が 429 で全滅した（8/24 19:50 の AIレポート欠落）。
+#   ※採用可否は「200 が返った」でも「1回通った」でも判断できない。
+#   本番同等の入力で、スキーマ検証（_parse_response）まで通ることを確認すること。
 GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.7-flash")
+
+# リポジトリ側の正。ここが唯一の既定値で、GitHub Actions の workflow には
+# あえて GEMINI_MODEL を置いていない（二重管理で「既定だけ直して本番が変わらない」
+# 事故が起きるため）。環境変数での上書きは Streamlit Cloud Secrets 等の
+# 緊急避難用に残してあるが、上書き時は起動ログに警告を出して可視化する。
+GEMINI_MODEL_DEFAULT: str = "gemini-3.6-flash"
+GEMINI_MODEL: str = os.getenv("GEMINI_MODEL") or GEMINI_MODEL_DEFAULT
+GEMINI_MODEL_IS_OVERRIDDEN: bool = GEMINI_MODEL != GEMINI_MODEL_DEFAULT
+
+# 日次クォータ（RPD）枯渇時に順に切り替える退避モデル。
+# RPD はモデル単位の枠なので、待つのではなく別モデルへ移るのが最速の復旧になる。
+GEMINI_FALLBACK_MODELS: list[str] = [
+    m.strip()
+    for m in os.getenv("GEMINI_FALLBACK_MODELS", "gemini-3.6-flash,gemini-3.5-flash").split(",")
+    if m.strip()
+]
+
+# 1リクエストの上限秒数。SDK 既定の 600秒は「内部リトライ込みの総予算」なので、
+# 遅いモデルに当たると1回の generate_content が何度もクォータを消費する。
+# ここを短く固定し、かつ SDK 内部リトライを無効化して「1呼び出し=1リクエスト」にする。
+GEMINI_REQUEST_TIMEOUT_SEC: int = int(os.getenv("GEMINI_REQUEST_TIMEOUT_SEC", "300"))
 
 # ---- Slack ----
 SLACK_WEBHOOK_URL: str = os.getenv("SLACK_WEBHOOK_URL", "")

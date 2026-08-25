@@ -20,6 +20,8 @@ if str(ROOT) not in sys.path:
 
 from config.settings import (
     GEMINI_MODEL,
+    GEMINI_MODEL_DEFAULT,
+    GEMINI_MODEL_IS_OVERRIDDEN,
     MARKET_NEWS_AUTO_FETCH,
     MARKET_NEWS_RSS_ENABLED,
     TAVILY_API_KEY,
@@ -1096,6 +1098,8 @@ def _render_ai_report_tab(
         quality_feedback_preview,
     )
 
+    _render_effective_model_caption()
+
     if st.button("Gemini AIレポートを生成", type="primary", use_container_width=True):
         with st.spinner("Geminiでレポート生成中..."):
             quality_feedback = quality_feedback_preview if use_quality_feedback else ""
@@ -1127,7 +1131,7 @@ def _render_ai_report_tab(
                 markdown=markdown,
                 report_json=report_json,
                 today_summary=today_summary,
-                model_used=GEMINI_MODEL,
+                model_used=generator.model_name,
             )
             quality_comparison = build_quality_comparison(before_quality_row, after_quality_row)
             quality_comparison_markdown = build_quality_comparison_markdown(quality_comparison)
@@ -1136,7 +1140,7 @@ def _render_ai_report_tab(
                 report_obj.current_macro_context,
                 markdown,
                 report_json=report_json,
-                model_used=GEMINI_MODEL,
+                model_used=generator.model_name,
             )
             save_ai_report_quality_comparison(selected_date, quality_comparison_markdown)
             st.session_state[f"quality_regen_comparison_{selected_date}"] = quality_comparison
@@ -1159,6 +1163,22 @@ def _render_ai_report_tab(
         )
     else:
         st.info("この日付のAIレポートはまだ生成されていません。")
+
+
+def _render_effective_model_caption() -> None:
+    """このアプリが実際に使う Gemini モデルを表示する。
+
+    2026-08-24 の障害では Streamlit Cloud Secrets だけ古いモデルが残っており、
+    手動生成は通るのに定時実行だけ落ちる、という食い違いの発見が遅れた。
+    どのモデルで生成しているかを画面に出して、その食い違いを見えるようにする。
+    """
+    if GEMINI_MODEL_IS_OVERRIDDEN:
+        st.caption(
+            f"⚠️ 使用モデル: `{GEMINI_MODEL}`（Secrets の `GEMINI_MODEL` による上書き。"
+            f"リポジトリ既定は `{GEMINI_MODEL_DEFAULT}`）"
+        )
+    else:
+        st.caption(f"使用モデル: `{GEMINI_MODEL}`（日次クォータ枯渇時は退避モデルへ自動切替）")
 
 
 def _render_quality_feedback_preview(selected_date: str, quality_feedback: str) -> bool:

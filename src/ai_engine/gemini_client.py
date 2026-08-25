@@ -9,7 +9,14 @@ from typing import Optional
 import google.generativeai as genai
 from loguru import logger
 
-from config.settings import GEMINI_API_KEY, GEMINI_MODEL
+from config.settings import (
+    GEMINI_API_KEY,
+    GEMINI_FALLBACK_MODELS,
+    GEMINI_MODEL,
+    GEMINI_MODEL_DEFAULT,
+    GEMINI_MODEL_IS_OVERRIDDEN,
+    GEMINI_REQUEST_TIMEOUT_SEC,
+)
 from src.ai_engine.output_schema import ReadingReport
 from src.ai_engine.prompt_builder import build_system_prompt, build_user_prompt
 from src.ai_engine.report_lint import lint_report_markdown
@@ -25,11 +32,57 @@ class GeminiReportGenerator:
             raise ValueError(".env に GEMINI_API_KEY が設定されていません")
 
         genai.configure(api_key=GEMINI_API_KEY)
-        self._model = genai.GenerativeModel(
-            model_name=GEMINI_MODEL,
-            system_instruction=build_system_prompt(),
+        self._system_instruction = build_system_prompt()
+        self.model_name = GEMINI_MODEL
+        self._model = self._build_model(self.model_name)
+
+        # モデル指定の出所をログに残す。2026-08-24 の障害時、Streamlit Cloud Secrets
+        # だけ古い値が残っていて手動生成と定時実行で別モデルが動き、原因が見えにくかった。
+        if GEMINI_MODEL_IS_OVERRIDDEN:
+            logger.warning(
+                f"Gemini クライアント初期化: {self.model_name}"
+                f"（環境変数 GEMINI_MODEL による上書き。リポジトリ既定は {GEMINI_MODEL_DEFAULT}。"
+                f"Streamlit Cloud Secrets に古い値が残っていないか確認すること）"
+            )
+        else:
+            logger.info(f"Gemini クライアント初期化: {self.model_name}（リポジトリ既定）")
+
+    def _build_model(self, model_name: str) -> genai.GenerativeModel:
+        return genai.GenerativeModel(
+            model_name=model_name,
+            system_instruction=self._system_instruction,
         )
-        logger.info(f"Gemini クライアント初期化: {GEMINI_MODEL}")
+
+    def _model_chain(self) -> list[str]:
+        """既定モデル → 退避モデルの順（重複除去）。前から順に試す。"""
+        chain = [self.model_name]
+        for name in GEMINI_FALLBACK_MODELS:
+            if name not in chain:
+                chain.append(name)
+        return chain
+
+    @staticmethod
+    def _classify_error(message: str) -> str:
+        """
+        例外メッセージを対処方針で分類する。
+
+        - daily_quota: 日次枠(RPD)の枯渇。待っても回復しないので即モデル切替。
+        - rate_limit : 分次レート(RPM)超過。65秒待てば回復する。
+        - api        : 504/503 等のサーバ側都合。同一モデルで数回リトライする価値がある。
+        - other      : JSONパース失敗・スキーマ検証エラー等。モデルを変えても直らない。
+        """
+        lowered = message.lower()
+        is_quota = (
+            "429" in message
+            or "resource_exhausted" in lowered
+            or "exceeded your current quota" in lowered
+        )
+        if is_quota:
+            # quota_id 例: GenerateRequestsPerDayPerProjectPerModel-FreeTier
+            return "daily_quota" if "perday" in lowered.replace("_", "") else "rate_limit"
+        if any(token in lowered for token in ("504", "503", "500", "deadline", "unavailable", "timeout")):
+            return "api"
+        return "other"
 
     def generate_report(
         self,
@@ -57,56 +110,103 @@ class GeminiReportGenerator:
             quality_feedback=quality_feedback,
         )
 
-        for attempt in range(self.MAX_RETRIES):
-            try:
-                logger.info(f"Gemini API呼び出し中... (attempt {attempt+1})")
-                response = self._model.generate_content(
-                    user_prompt,
-                    generation_config=genai.GenerationConfig(
-                        temperature=0.3,    # 分析の一貫性を重視
-                        # 8192 では大きなレポートJSONが途中で切れて json.loads に失敗するため拡大
-                        max_output_tokens=32768,
-                        response_mime_type="application/json",
-                    ),
-                )
+        last_error: Exception | None = None
+        chain = self._model_chain()
 
-                raw_text = response.text
-                logger.info(f"Gemini レスポンス受信: {len(raw_text)}文字")
+        for index, model_name in enumerate(chain):
+            if index > 0:
+                logger.warning(f"退避モデルへ切替: {chain[index - 1]} → {model_name}")
+                self.model_name = model_name
+                self._model = self._build_model(model_name)
 
-                # JSONパース
-                report_obj = self._parse_response(raw_text)
+            move_to_next_model = False
 
-                # Markdown形式にレンダリング
-                markdown = self._render_markdown(report_obj, target_date)
-                lint_issues = lint_report_markdown(markdown, input_text=user_prompt)
-                if lint_issues:
-                    logger.warning(
-                        "AIレポートlint警告: "
-                        + " / ".join(issue.message for issue in lint_issues[:5])
+            for attempt in range(self.MAX_RETRIES):
+                try:
+                    logger.info(
+                        f"Gemini API呼び出し中... (model={model_name} attempt {attempt + 1})"
+                    )
+                    response = self._model.generate_content(
+                        user_prompt,
+                        generation_config=genai.GenerationConfig(
+                            temperature=0.3,    # 分析の一貫性を重視
+                            # 8192 では大きなレポートJSONが途中で切れて json.loads に失敗するため拡大
+                            max_output_tokens=32768,
+                            response_mime_type="application/json",
+                        ),
+                        # SDK 既定の retry は 429/504 を一時エラーとみなし、既定デッドライン
+                        # 600秒のあいだ内部でリクエストを投げ直す。内部リトライ1回ごとに
+                        # 日次枠(RPD)を消費するため、遅いモデルに当たると1回の呼び出しで
+                        # 20 req/日を使い切る（2026-08-24 に 3.7-flash で実際に発生し、
+                        # 直後の定時実行が 429 で全滅して AIレポートが欠落した）。
+                        # 内部リトライを切り、「1呼び出し = 1リクエスト」を保証する。
+                        request_options={
+                            "retry": None,
+                            "timeout": GEMINI_REQUEST_TIMEOUT_SEC,
+                        },
                     )
 
-                return report_obj, markdown
+                    raw_text = response.text
+                    logger.info(f"Gemini レスポンス受信: {len(raw_text)}文字")
 
-            except Exception as e:
-                # 無料枠は 5リクエスト/分・入力250Kトークン/分。429 を秒単位で
-                # リトライすると同じ分内で再衝突して全滅するため、レート枠が
-                # リセットされる 60秒超まで待つ（2026-06-26〜07-02 の連続失敗の教訓）。
-                message = str(e)
-                is_quota = "429" in message or "RESOURCE_EXHAUSTED" in message or "quota" in message.lower()
-                wait = 65 if is_quota else 2 ** attempt
-                logger.error(f"Gemini APIエラー (attempt {attempt+1}): {e}")
-                if attempt < self.MAX_RETRIES - 1:
-                    logger.info(f"{wait}秒後にリトライ...{'（クォータ枠リセット待ち）' if is_quota else ''}")
+                    # JSONパース
+                    report_obj = self._parse_response(raw_text)
+
+                    # Markdown形式にレンダリング
+                    markdown = self._render_markdown(report_obj, target_date)
+                    lint_issues = lint_report_markdown(markdown, input_text=user_prompt)
+                    if lint_issues:
+                        logger.warning(
+                            "AIレポートlint警告: "
+                            + " / ".join(issue.message for issue in lint_issues[:5])
+                        )
+
+                    return report_obj, markdown
+
+                except Exception as e:
+                    last_error = e
+                    kind = self._classify_error(str(e))
+                    logger.error(
+                        f"Gemini APIエラー (model={model_name} "
+                        f"attempt {attempt + 1}/{self.MAX_RETRIES}, 種別={kind}): {e}"
+                    )
+
+                    if kind == "daily_quota":
+                        # RPD はモデル単位の枠で、リセットは太平洋時間の深夜＝JST 16:00。
+                        # 同じモデルへの再試行は枠を削るだけなので待たずに切り替える。
+                        logger.warning(
+                            f"{model_name} の日次クォータ枯渇。リトライせず次のモデルへ移る。"
+                        )
+                        move_to_next_model = True
+                        break
+
+                    if attempt == self.MAX_RETRIES - 1:
+                        # パース失敗等はモデルを変えても直らないので、ここで打ち切る。
+                        move_to_next_model = kind != "other"
+                        break
+
+                    # 無料枠は 5リクエスト/分。分次レートの 429 を秒単位でリトライすると
+                    # 同じ分内で再衝突して全滅するため、枠がリセットされる 60秒超を待つ
+                    # （2026-06-26〜07-02 の連続失敗の教訓）。
+                    wait = 65 if kind == "rate_limit" else 2 ** attempt
+                    logger.info(
+                        f"{wait}秒後にリトライ..."
+                        f"{'（レート枠リセット待ち）' if kind == 'rate_limit' else ''}"
+                    )
                     time.sleep(wait)
-                else:
-                    raise
 
-    def _parse_response(self, raw_text: str) -> ReadingReport:
+            if not move_to_next_model:
+                break
+
+        raise last_error if last_error else RuntimeError("Gemini レポート生成に失敗しました")
+
+    @classmethod
+    def _parse_response(cls, raw_text: str) -> ReadingReport:
         """JSON レスポンスをパースしてPydanticオブジェクトに変換"""
-        text = self._extract_json_text(raw_text)
+        text = cls._extract_json_text(raw_text)
 
         try:
-            data = self._loads_json_tolerant(text)
+            data = cls._loads_json_tolerant(text)
             # モデルが新設フィールドを落とした場合でも、レポート生成を止めない。
             data.setdefault(
                 "jpx_short_selling_breakdown_analysis",

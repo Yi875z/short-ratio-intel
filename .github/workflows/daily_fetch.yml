@@ -46,11 +46,11 @@ jobs:
       #   J-Quants の認証キーは不要（jquants_client.py は名前に反しスクレイパー）
       # 任意: 完了/失敗サマリーの Slack 通知
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-      # 使用モデル（未設定なら settings.py の既定 gemini-3.7-flash）
-      # ここの値は settings.py の既定より優先される。モデル移行時は両方直すこと。
-      # Free Tier の 20 req/日はモデル単位の枠なので、429 枯渇時はここを退避先
-      # （gemini-3.6-flash）に切り替えれば即復旧できる。
-      GEMINI_MODEL: gemini-3.7-flash
+      # 使用モデルは【あえてここに置かない】。config/settings.py の
+      # GEMINI_MODEL_DEFAULT が唯一の正。ここに env を書くと settings.py の既定を
+      # 上書きしてしまい、「既定だけ直したのに本番が変わらない」二重管理事故になる。
+      # Free Tier の 20 req/日はモデル単位の枠だが、枯渇時は gemini_client が
+      # GEMINI_FALLBACK_MODELS へ自動退避するので手当て不要（2026-08-25 に自動化）。
 
     steps:
       - name: Checkout repository

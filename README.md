@@ -18,7 +18,7 @@ GitHub Actions（平日19:00 JST）           Streamlit Community Cloud（常時
 ```
 
 - **データ取得**: JPX公式PDF + stock-marketdata.com（公開スクレイピング、認証キー不要）
-- **AI**: Gemini API（既定 `gemini-3.7-flash`）
+- **AI**: Gemini API（既定 `gemini-3.6-flash`。日次クォータ枯渇時は退避モデルへ自動切替）
 - **任意ニュース**: Tavily API（市場テーマ判定・レポート増補）
 - **保存先**: 環境変数 `DATABASE_URL` があれば Supabase、無ければローカル SQLite に自動切替
 - 閲覧はクラウドの公開URL（bcryptログインで保護）。データ取得は GitHub Actions が自動実行。

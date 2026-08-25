@@ -4,7 +4,7 @@
 > 本ファイルへの参照のみを記載し、ルール本文を複製しないこと。
 > 新しいAIエージェントを導入する場合も、そのエージェントの規約ファイルから本ファイルを参照させるだけでよい。
 
-- 最終更新: 2026-08-11（テスト基準を178件へ更新：空売り残高9件・業種別騰落率16件の追加）
+- 最終更新: 2026-08-25（テスト基準を228件へ更新：Gemini のリトライ／退避・設定正本化のテスト15件の追加）
 - 対象プロジェクト: short-ratio-intel（JPX空売り比率の取得・分析・Gemini AIレポート生成 Streamlit アプリ）
 - 公開区分: L3（コードは一般公開。ナレッジ原本・Secrets・個人データはリポジトリ外で非公開管理）
 
@@ -75,7 +75,7 @@
 - **技術スタック**: Python 3.12（Streamlit Community Cloud 固定。新しすぎる Python は固定依存の wheel が無くビルド失敗する）/
   pandas 2.2.0 / SQLAlchemy 2.0.27 / psycopg2-binary / pydantic 2.6.0 / loguru / feedparser / Streamlit / Gemini API / pytest
 - **起動コマンド**: `streamlit run app/streamlit_app.py`（本番は Streamlit Community Cloud・bcrypt ログイン付き。main へ push すると自動再デプロイ）
-- **テストコマンド**: `pytest`（基準: 全213件パス。2026-08-21 実測 14秒。空売り比率スクレイパーのパース回帰テストを追加）
+- **テストコマンド**: `pytest`（基準: 全228件パス。2026-08-25 実測 14秒。Gemini のリトライ／退避・設定正本化のテストを追加）
 - **DBスキーマの正**: `src/storage/db.py` の `get_engine()` が `DATABASE_URL` ありで Supabase(PostgreSQL)、無しでローカル SQLite に切替。
   スキーマ定義の正本ファイルは未確認（`src/storage/` 配下を参照）
 - **データソースと取得条件**:
@@ -88,6 +88,19 @@
   - 業種別株価指数の騰落率: nikkei225jp.com の履歴JS（`src/macro_context/sector_price.py`）。
     値に業種名が付かず**並び順のみが同定手段**のため、仕様は `docs/data_sources/sector_price_index.md` を正とする
   - 米国: FINRA CNMS（日次フロー）/ FINRA公式API（空売り残高・隔週）/ Yahoo chart API（日足）。いずれも認証不要
+- **AIモデル（Gemini）の扱い**:
+  - モデル指定の正本は `config/settings.py` の `GEMINI_MODEL_DEFAULT` **1箇所だけ**。
+    workflow には env を置かない（二重管理事故の防止。2026-08-25 に削除）。
+    環境変数での上書きは緊急避難用に残すが、効いていれば起動ログと Streamlit 画面に警告が出る。
+    Streamlit Cloud Secrets に `GEMINI_MODEL` を**置かない**のが既定運用
+  - `ai_reports.model_used` には設定値ではなく実際に使われたモデルを記録する（自動退避の追跡用）
+  - Free Tier の 20 req/日は**モデル単位**の枠。枯渇時は `GEMINI_FALLBACK_MODELS` へ自動で退避する
+  - **SDK の内部リトライは必ず切る**（`request_options={"retry": None, "timeout": ...}`）。
+    既定のままだと 429/504 を600秒間ひとりで投げ直し、1呼び出しで日次枠を使い切る
+  - 新モデルの採用可否は `python -m scripts.check_gemini_model <model>` で判定する。
+    「200 が返った」「短文で1回通った」では判断しない。本番同等の入力でスキーマ検証まで通し、
+    **所要時間がタイムアウトの半分以下**であることを条件とする
+    （2026-08-24 の AIレポート欠落は、単発 85.5秒のモデルが本番で 600秒超に化けたことが起点）
 - **スケジュール実行**（いずれも GitHub Actions → Supabase → Streamlit Cloud。PC非依存）:
   - 日本: `daily_fetch.yml` 平日19:07 JST（cron `7 10 * * 1-5`、`scripts/fetch_short_ratio.py`）。Gemini AIレポートあり。
   - 米国: `us_daily_fetch.yml` 平日08:37 JST（cron `37 23 * * 0-4`、`scripts/fetch_us_short_flow.py`）。

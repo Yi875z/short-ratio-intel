@@ -146,7 +146,7 @@ def _step_report(
     """ステップ3: Gemini AIレポート生成 → DB 保存。
 
     Returns:
-        (生成文字数, ReadingReport オブジェクト) のタプル。
+        (生成文字数, ReadingReport オブジェクト, 実際に使われたモデル名) のタプル。
         通知に結論・レジームを載せるため report_obj も返す。
     """
     logger.info(f"[3/3] Gemini AIレポート生成 (model={GEMINI_MODEL})")
@@ -158,15 +158,18 @@ def _step_report(
         anomalies,
         auto_fetch_news=auto_fetch_news,
     )
+    # 日次クォータ枯渇時は generator が退避モデルへ自動で切り替わるため、
+    # 設定値ではなく「実際に使われたモデル」を記録する。
+    used_model = generator.model_name
     save_ai_report(
         report_date,
         report_obj.current_macro_context,
         markdown,
         report_json=report_obj.model_dump_json(),
-        model_used=GEMINI_MODEL,
+        model_used=used_model,
     )
-    logger.info(f"AIレポート保存完了: {len(markdown)}文字")
-    return len(markdown), report_obj
+    logger.info(f"AIレポート保存完了: {len(markdown)}文字 (model={used_model})")
+    return len(markdown), report_obj, used_model
 
 
 def _format_report_highlights(report_obj) -> str:
@@ -231,6 +234,7 @@ def run(args: argparse.Namespace) -> int:
     theme_count = 0
     report_chars = 0
     report_obj = None
+    used_model = GEMINI_MODEL
 
     if args.no_report and args.no_theme:
         logger.info("レポート・テーマともにスキップ指定。取得のみで終了します。")
@@ -242,7 +246,7 @@ def run(args: argparse.Namespace) -> int:
             theme_count = _step_theme(report_date, today_summary, auto_fetch_news)
 
         if not args.no_report:
-            report_chars, report_obj = _step_report(
+            report_chars, report_obj, used_model = _step_report(
                 report_date, today_summary, weekly_df, anomalies, auto_fetch_news
             )
 
@@ -252,7 +256,7 @@ def run(args: argparse.Namespace) -> int:
         f"・取得: sector={fetch_result.get('saved_sector')} / "
         f"market={fetch_result.get('saved_market')}\n"
         f"・市場テーマ: {theme_count}件\n"
-        f"・AIレポート: {report_chars}文字 ({GEMINI_MODEL})\n"
+        f"・AIレポート: {report_chars}文字 ({used_model})\n"
         f"・DB: {backend}"
     )
     if highlights:

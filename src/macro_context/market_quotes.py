@@ -15,6 +15,8 @@ import datetime as _dt
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
+from loguru import logger
+
 
 SITE_BASE = "https://nikkei225jp.com"
 _SERIES_PATH = "/_data/_nfsWEB/HS_DATA_DAY/S{code}.json"
@@ -311,7 +313,10 @@ def _fetch_site_nikkei_topix():
                 continue
             rows.append(
                 {
-                    "date": pd.to_datetime(ts, unit="ms"),
+                    # サイトの足は 15:00 UTC（＝翌 00:00 JST）でスタンプされているため、
+                    # 生の ms をそのまま解釈すると取引日が1日前にずれる。
+                    # （8/21終値 66,016.36 が 8/20 15:00 として入っていた）
+                    "date": pd.Timestamp(_jst_date(ts)),
                     "nikkei": nk_map[ts],
                     "topix": topix,
                     "nt_ratio": nk_map[ts] / topix,
@@ -335,6 +340,68 @@ def fetch_nt_ratio_history(period: str = "6mo"):
     cutoff = df["date"].max() - pd.Timedelta(days=days)
     out = df[df["date"] >= cutoff].copy()
     return out if not out.empty else df
+
+
+# 日経平均の日足OHLC。Yahoo チャートAPI の `^N225` は open/high/low/close が揃う。
+# ⚠️ TOPIX の OHLC は無料・認証不要の範囲に存在しない（2026-08-25 調査）。
+#    Yahoo は ^TPX / ^TOPX / 998405.T すべて空、stooq は JS 検証ページ化して死亡、
+#    stock-marketdata.com/nikkei225.html は終値のみで始値・高値・安値の列が無い。
+#    したがってロウソク足は日経平均だけ。TOPIX は終値ラインで表示する。
+_NIKKEI_YAHOO_SYMBOL = "^N225"
+
+
+def fetch_nikkei_topix_close_history(from_date=None, to_date=None):
+    """日経平均・TOPIXの終値時系列を DataFrame(date, nikkei, topix) で返す。失敗時 None。
+
+    出所は nikkei225jp.com の日次JSON。Yahoo では TOPIX を取得できないため、
+    実TOPIXの時系列が取れる唯一の実用ソースになっている。
+    """
+    df = _fetch_site_nikkei_topix()
+    if df is None or df.empty:
+        return None
+
+    import pandas as pd
+
+    out = df[["date", "nikkei", "topix"]].copy()
+    if from_date is not None:
+        out = out[out["date"] >= pd.to_datetime(from_date)]
+    if to_date is not None:
+        out = out[out["date"] <= pd.to_datetime(to_date)]
+    return out if not out.empty else None
+
+
+def fetch_nikkei_ohlc_history(from_date, to_date):
+    """日経平均の日足OHLCを DataFrame(date, open, high, low, close) で返す。失敗時 None。
+
+    Yahoo チャートAPI を叩く既存の UsPriceClient をそのまま使う（HTTPコードを重複させない）。
+    to_yahoo_symbol() は "/"→"-" の変換だけなので ^N225 は素通りし、parse_chart_payload() は
+    meta.gmtoffset で取引所ローカル日付へ換算するため JST の営業日で正しく並ぶ。
+    """
+    try:
+        import pandas as pd
+
+        from src.data_fetcher.us_price_client import UsPriceClient
+
+        records = UsPriceClient().get_daily_ohlcv(_NIKKEI_YAHOO_SYMBOL, from_date, to_date)
+        if not records:
+            return None
+
+        out = pd.DataFrame([
+            {
+                "date": pd.to_datetime(r["Date"]),
+                "open": r["Open"],
+                "high": r["High"],
+                "low": r["Low"],
+                "close": r["Close"],
+            }
+            for r in records
+        ])
+        # 休場・未確定の足は None で来る。ロウソク足は4値揃っていないと描けない。
+        out = out.dropna(subset=["open", "high", "low", "close"])
+        return out if not out.empty else None
+    except Exception as exc:
+        logger.warning(f"日経平均の日足OHLC取得に失敗: {exc}")
+        return None
 
 
 def _current_nt_ratio(quotes=None) -> float | None:

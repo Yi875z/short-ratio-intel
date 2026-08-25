@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -34,7 +35,14 @@ from src.macro_context.event_calendar import (
 )
 from src.macro_context.house_view import load_house_view, store_house_view
 from src.macro_context.institutional_flow import diagnose_connection, fetch_investor_flow
-from src.macro_context.market_quotes import fetch_nt_ratio_history, fetch_quotes
+from src.macro_context.market_quotes import (
+    fetch_nikkei_ohlc_history,
+    fetch_nikkei_topix_close_history,
+    fetch_nt_ratio_history,
+    fetch_quotes,
+)
+from src.macro_context.sector_price import returns_by_sector_code
+from src.analyzer.sector_insight import HIGH_ZONE_MIN_RATIO, build_sector_insights
 from src.ai_engine.prompt_builder import build_theme_transition_context_for_prompt
 from src.ai_engine.report_quality import (
     build_quality_comparison,
@@ -290,6 +298,217 @@ def _cached_nt_ratio_history(period: str = "6mo"):
     return fetch_nt_ratio_history(period)
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_index_close_history(from_iso: str, to_iso: str):
+    """日経平均・TOPIXの終値時系列を5分キャッシュで取得する。"""
+    return fetch_nikkei_topix_close_history(from_iso, to_iso)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_nikkei_ohlc(from_iso: str, to_iso: str):
+    """日経平均の日足OHLCを5分キャッシュで取得する（ロウソク足を選んだときだけ呼ぶ）。"""
+    return fetch_nikkei_ohlc_history(from_iso, to_iso)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _cached_sector_returns(target_date: str):
+    """業種別株価指数の前日騰落率を10分キャッシュで取得する（S33コード→騰落率）。"""
+    return returns_by_sector_code(target_date)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _cached_sector_history(target_date: str, days: int = 90):
+    """Zスコア・パーセンタイル・連続日数に使う長めの業種履歴。
+
+    画面が使う weekly_df（14日）ではサンプルが足りないため別に読む。
+    既存の weekly_df の流れは変えない。
+    """
+    return RatioCalculator().get_weekly_trend(target_date, days=days)
+
+
+_LINE_STYLE = "ライン"
+_CANDLE_STYLE = "ロウソク足"
+
+# 日経平均に重ねる指数平滑移動平均線。表示するかどうかは画面で選ぶ。
+_EMA_PERIODS = (20, 60, 120)
+_EMA_COLORS = {20: "#2980b9", 60: "#8e44ad", 120: "#7f8c8d"}
+
+# EMAの助走期間（カレンダー日）。表示範囲のデータだけで計算すると窓の先頭が不正確になる。
+# 600日＝約400営業日あり、最長のEMA120（span=120）に対して3倍以上の助走が取れる。
+# 助走ぶんは計算に使うだけでチャートには出さない（clip_to_window で切る）。
+_EMA_WARMUP_DAYS = 600
+
+
+def add_ema_columns(df, close_col: str = "close", periods=_EMA_PERIODS):
+    """終値からEMAを計算して ema{期間} 列を足す。
+
+    ⚠️ 表示範囲より前の助走データを含んだ状態で呼ぶこと。表示範囲だけで計算すると
+    窓の先頭のEMAが初期値に引きずられ、実際とは違う線になる。
+    """
+    if df is None or len(df) == 0 or not periods:
+        return df
+
+    out = df.copy()
+    for period in periods:
+        out[f"ema{period}"] = out[close_col].ewm(span=period, adjust=False).mean()
+    return out
+
+
+def clip_to_window(df, from_iso: str, to_iso: str):
+    """EMAを計算し終えたあとで表示範囲へ切る（助走期間をチャートに出さない）。"""
+    if df is None or len(df) == 0:
+        return df
+
+    mask = (df["date"] >= pd.to_datetime(from_iso)) & (df["date"] <= pd.to_datetime(to_iso))
+    return df[mask]
+
+
+def _apply_index_axes(fig: go.Figure, title: str, date_range) -> None:
+    """上の空売りチャートと横軸を揃え、非営業日の空白を潰す。"""
+    fig.update_layout(
+        title=title,
+        height=300,
+        margin=dict(l=10, r=10, t=40, b=10),
+        showlegend=False,
+    )
+    fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
+    if date_range:
+        start, end = (pd.to_datetime(value) for value in date_range)
+        # ロウソク足1本は前後0.5日ぶんの幅を持つ。範囲を終端ぴったりにすると
+        # 最新の足が半分だけ描かれて切れるため、両端に余白を入れる。
+        pad = pd.Timedelta(hours=18)
+        fig.update_xaxes(range=[start - pad, end + pad])
+
+
+def build_nikkei_figure(
+    close_df, ohlc_df, style: str, date_range=None, ema_periods=()
+) -> go.Figure:
+    """日経平均のチャート。
+
+    ロウソク足は四本値が揃っているときだけ描き、取得できなければラインへ落とす
+    （欠けた足を描いて嘘のチャートにしないため）。EMAは実際に描画した系列から引く。
+    """
+    fig = go.Figure()
+    use_candle = style == _CANDLE_STYLE and ohlc_df is not None and not ohlc_df.empty
+    source = None
+
+    if use_candle:
+        fig.add_trace(go.Candlestick(
+            x=ohlc_df["date"],
+            open=ohlc_df["open"],
+            high=ohlc_df["high"],
+            low=ohlc_df["low"],
+            close=ohlc_df["close"],
+            name="日経平均",
+        ))
+        fig.update_layout(xaxis_rangeslider_visible=False)
+        source = ohlc_df
+    elif close_df is not None and not close_df.empty:
+        fig.add_trace(go.Scatter(
+            x=close_df["date"], y=close_df["nikkei"], mode="lines", name="日経平均",
+        ))
+        source = close_df
+
+    drawn_ema = []
+    if source is not None:
+        for period in ema_periods:
+            column = f"ema{period}"
+            if column not in source.columns:
+                continue
+            fig.add_trace(go.Scatter(
+                x=source["date"],
+                y=source[column],
+                mode="lines",
+                name=f"EMA{period}",
+                line=dict(width=1.4, color=_EMA_COLORS.get(period)),
+            ))
+            drawn_ema.append(period)
+
+    _apply_index_axes(fig, "日経平均", date_range)
+    if drawn_ema:
+        # EMAを重ねたときだけ凡例を出す（どの線が何期間か分からないと読めないため）
+        fig.update_layout(
+            showlegend=True,
+            legend=dict(orientation="h", yanchor="bottom", y=1.0, x=0),
+        )
+    return fig
+
+
+def build_topix_figure(close_df, date_range=None) -> go.Figure:
+    """TOPIXのチャート。公開データに四本値が無いため常にライン（代理ETFで代用しない）。"""
+    fig = go.Figure()
+    if close_df is not None and not close_df.empty:
+        fig.add_trace(go.Scatter(
+            x=close_df["date"],
+            y=close_df["topix"],
+            mode="lines",
+            name="TOPIX",
+            line=dict(color="#e67e22"),
+        ))
+    _apply_index_axes(fig, "TOPIX", date_range)
+    return fig
+
+
+def _render_index_charts(date_min, date_max, key_prefix: str) -> None:
+    """空売りチャートの直下に、同じ日付範囲の日経平均・TOPIXを並べる。
+
+    外部サイトからの取得なので、失敗しても caption を出すだけにする（fail-soft）。
+    上の空売りチャートを巻き込んで壊さないことを優先する。
+    """
+    if date_min is None or date_max is None:
+        return
+
+    from_iso = str(pd.to_datetime(date_min).date())
+    to_iso = str(pd.to_datetime(date_max).date())
+    # EMAの助走ぶんまで遡って取得し、計算し終えてから表示範囲へ切る
+    warmup_iso = str((pd.to_datetime(from_iso) - pd.Timedelta(days=_EMA_WARMUP_DAYS)).date())
+
+    close_full = _cached_index_close_history(warmup_iso, to_iso)
+    if close_full is None or close_full.empty:
+        st.caption("日経平均・TOPIXの値動きを取得できませんでした（時間をおいて再試行してください）。")
+        return
+
+    style_col, ema_col = st.columns([1, 2])
+    with style_col:
+        style = st.radio(
+            "表示形式",
+            [_LINE_STYLE, _CANDLE_STYLE],
+            horizontal=True,
+            key=f"index_style_{key_prefix}",
+        )
+    with ema_col:
+        ema_periods = st.multiselect(
+            "日経平均に重ねるEMA",
+            list(_EMA_PERIODS),
+            default=list(_EMA_PERIODS),
+            format_func=lambda period: f"EMA{period}",
+            key=f"index_ema_{key_prefix}",
+        )
+
+    ohlc_full = _cached_nikkei_ohlc(warmup_iso, to_iso) if style == _CANDLE_STYLE else None
+    if style == _CANDLE_STYLE and (ohlc_full is None or ohlc_full.empty):
+        st.caption("日経平均の四本値を取得できなかったため、ラインで表示します。")
+
+    close_df = clip_to_window(
+        add_ema_columns(close_full, "nikkei", ema_periods), from_iso, to_iso
+    )
+    ohlc_df = clip_to_window(
+        add_ema_columns(ohlc_full, "close", ema_periods), from_iso, to_iso
+    ) if ohlc_full is not None else None
+
+    date_range = (from_iso, to_iso)
+    st.plotly_chart(
+        build_nikkei_figure(close_df, ohlc_df, style, date_range, ema_periods),
+        use_container_width=True,
+    )
+    st.plotly_chart(build_topix_figure(close_df, date_range), use_container_width=True)
+    st.caption(
+        "上の空売り比率と同じ期間で表示しています。EMAは表示期間より前の助走データを含めて"
+        "計算しています。TOPIXは公開データに始値・高値・安値が無いためライン表示のみ"
+        "（出所: nikkei225jp.com／日経平均の四本値は Yahoo ^N225）。"
+    )
+
+
 def _short_as_of(as_of: str) -> str:
     """カード表示用にデータ時点を短縮（準リアルタイムは時刻、日次は M/D）。"""
     if not as_of:
@@ -328,7 +547,7 @@ def _render_market_data_tab() -> None:
         with st.expander("取得状況（診断）", expanded=False):
             st.dataframe(
                 pd.DataFrame(
-                    [{"銘柄": q.label, "ticker": q.ticker, "エラー": q.error} for q in quotes]
+                    [{"銘柄": q.label, "ティッカー": q.ticker, "エラー": q.error} for q in quotes]
                 ),
                 use_container_width=True,
                 hide_index=True,
@@ -773,22 +992,228 @@ def _render_overview(
             x="date",
             y="short_ratio_pct",
             markers=True,
+            labels=_COLUMN_LABELS,
             title="東証全体 空売り比率推移",
         )
         fig.update_layout(height=360, margin=dict(l=10, r=10, t=50, b=10))
         st.plotly_chart(fig, use_container_width=True)
+        _render_index_charts(trend["date"].min(), trend["date"].max(), "overview")
 
     high_col, low_col = st.columns(2)
     with high_col:
         st.subheader("高空売り 上位5業種")
-        st.dataframe(_sector_frame(today_summary.get("top5_high", [])), hide_index=True)
+        st.dataframe(_ja_frame(_sector_frame(today_summary.get("top5_high", []))), hide_index=True)
     with low_col:
         st.subheader("低空売り 下位5業種")
-        st.dataframe(_sector_frame(today_summary.get("top5_low", [])), hide_index=True)
+        st.dataframe(_ja_frame(_sector_frame(today_summary.get("top5_low", []))), hide_index=True)
 
     if anomalies:
         st.subheader("異常値")
-        st.dataframe(pd.DataFrame([a.__dict__ for a in anomalies]), hide_index=True)
+        st.dataframe(_ja_frame(pd.DataFrame([a.__dict__ for a in anomalies])), hide_index=True)
+
+
+# 画面に出す表の見出しは日本語で統一する。DBやデータクラスの列名は英語のままなので、
+# 表示の直前にここで置き換える（st.dataframe に渡す前に必ず _ja_frame を通すこと）。
+_COLUMN_LABELS = {
+    # 業種・空売り比率
+    "sector_name": "業種",
+    "s33_code": "業種コード",
+    "short_ratio_pct": "空売り比率(%)",
+    "current_ratio": "空売り比率(%)",
+    "dod_change": "前日比(pt)",
+    "zone_label": "ゾーン",
+    "zone_key": "ゾーン区分",
+    "change_pct": "株価騰落率(%)",
+    "quadrant": "象限",
+    "zscore": "Zスコア",
+    "percentile": "パーセンタイル",
+    "streak_days": "連続日数",
+    "with_ratio": "規制あり比率(%)",
+    "without_ratio": "規制なし比率(%)",
+    "without_share": "規制なし構成比(%)",
+    "shrt_with_res_va": "規制あり売買代金",
+    "shrt_no_res_va": "規制なし売買代金",
+    "total_short_va": "空売り代金",
+    "sell_ex_short_va": "実売り代金",
+    "total_volume_va": "総売買代金",
+    # 異常値
+    "event_type": "種別",
+    "value": "値",
+    "severity": "重要度",
+    "description": "内容",
+    # 機械判定シグナル
+    "category": "分類",
+    "target": "対象",
+    "signal": "シグナル",
+    "rationale": "根拠",
+    "watch_point": "着目点",
+    "details": "詳細",
+    "invalidation_condition": "否定条件",
+    # 市場テーマ・ニュース
+    "date": "日付",
+    "key": "キー",
+    "name": "テーマ",
+    "score": "スコア",
+    "status": "状態",
+    "confidence": "確度",
+    "evidence": "根拠",
+    "evidence_count": "根拠数",
+    "related_sectors": "関連業種",
+    "unverified_count": "未検証数",
+    "unverified_data": "未検証データ",
+    "state": "変化",
+    "current_score": "今回スコア",
+    "previous_score": "前回スコア",
+    "score_change": "スコア差",
+    "current_status": "今回状態",
+    "previous_status": "前回状態",
+    "query": "検索語",
+    "title": "見出し",
+    "url": "URL",
+    "source": "出所",
+    "published_date": "公開日",
+    "snippet": "抜粋",
+    # AIレポート品質チェック
+    "check": "項目",
+    "result": "結果",
+    "message": "メッセージ",
+    # チャートの軸・凡例でも同じ辞書を使う
+    "nt_ratio": "NT倍率",
+    "score_pct": "スコア(%)",
+    # 共通
+    "ticker": "銘柄",
+}
+
+# 区分値そのものが英語のものも読み替える（列名 → {英語値: 日本語値}）
+_VALUE_LABELS = {
+    "event_type": {
+        "dod_spike": "前日比の急変",
+        "zscore_outlier": "統計的な外れ値",
+        "absolute_extreme": "絶対値が極端",
+    },
+    "severity": {
+        "high": "重大",
+        "medium": "中程度",
+        "low": "軽微",
+    },
+}
+
+
+def _ja_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """表示用に英語の列名・区分値を日本語へ置き換える（未知の列はそのまま残す）。"""
+    if df is None or len(df) == 0:
+        return df
+
+    out = df.copy()
+    for column, mapping in _VALUE_LABELS.items():
+        if column in out.columns:
+            out[column] = out[column].map(lambda v: mapping.get(v, v))
+    return out.rename(columns=_COLUMN_LABELS)
+
+
+# 業種テーブルの表示順（見出しは _COLUMN_LABELS が正）
+_SECTOR_TABLE_ORDER = (
+    "sector_name",
+    "short_ratio_pct",
+    "dod_change",
+    "change_pct",
+    "quadrant",
+    "zscore",
+    "percentile",
+    "without_share",
+    "streak_days",
+    "zone_label",
+)
+
+
+def _sector_insight_frame(today_summary: dict) -> pd.DataFrame:
+    """業種の空売り比率に文脈（株価騰落率・象限・Zスコア・規制内訳・連続日数）を付けた表。
+
+    計算は src/analyzer/sector_insight.py に集約してあり、AIレポートと同じ数字を使う。
+    外部取得（業種別株価）と履歴読み込みはどちらも失敗しうるので fail-soft にする。
+    """
+    target_date = today_summary.get("date") or ""
+    if not target_date:
+        return pd.DataFrame()
+
+    try:
+        sector_returns = _cached_sector_returns(target_date)
+    except Exception:
+        sector_returns = {}
+    try:
+        history_df = _cached_sector_history(target_date)
+    except Exception:
+        history_df = None
+
+    return pd.DataFrame(build_sector_insights(today_summary, history_df, sector_returns))
+
+
+def _render_quadrant_scatter(insight_df: pd.DataFrame) -> None:
+    """空売り比率の前日比 × 業種株価の騰落率を4象限で見る散布図。"""
+    plotted = insight_df.dropna(subset=["change_pct", "dod_change"])
+    missing = len(insight_df) - len(plotted)
+    if plotted.empty:
+        st.caption("業種別株価の騰落率を取得できなかったため、4象限マップは表示できません。")
+        return
+
+    fig = px.scatter(
+        plotted,
+        x="change_pct",
+        y="dod_change",
+        color="zone_label",
+        size="short_ratio_pct",
+        hover_name="sector_name",
+        hover_data={"quadrant": True, "short_ratio_pct": ":.1f"},
+        labels={
+            "change_pct": "業種株価 騰落率(%)",
+            "dod_change": "空売り比率 前日比(pt)",
+            "zone_label": "ゾーン",
+            "short_ratio_pct": "空売り比率(%)",
+            "quadrant": "象限",
+        },
+        title="4象限マップ（空売り比率の前日比 × 業種株価の騰落率）",
+    )
+    fig.add_hline(y=0, line_width=1, line_color="#888888")
+    fig.add_vline(x=0, line_width=1, line_color="#888888")
+    fig.update_layout(height=520, margin=dict(l=10, r=10, t=50, b=10))
+    st.plotly_chart(fig, use_container_width=True)
+    st.caption(
+        "右上=比率上昇×株価上昇（売り吸収・踏み上げの可能性）／"
+        "左上=比率上昇×株価下落（方向性売り優勢の可能性）／"
+        "右下=比率低下×株価上昇（ショートカバー主導の可能性）／"
+        "左下=比率低下×株価下落（売り圧力後退でも買い不在の可能性）。"
+        "いずれも可能性であり断定ではありません。"
+        + (f" 株価を取得できず除外: {missing}業種。" if missing else "")
+    )
+
+
+def _render_streak_ranking(insight_df: pd.DataFrame) -> None:
+    """高空売りゾーンが何営業日続いているかの上位5業種。
+
+    単日 50% より「連続で警戒ゾーン」の方が踏み上げの燃料としては重い。
+    テーブルの並べ替えでも見られるが、単日スパイクと持続の区別は明示的に出す。
+    """
+    if "streak_days" not in insight_df.columns:
+        return
+
+    threshold = f"{HIGH_ZONE_MIN_RATIO:.0f}%"
+    ranked = (
+        insight_df[insight_df["streak_days"] > 0]
+        .sort_values("streak_days", ascending=False)
+        .head(5)
+    )
+    st.markdown(f"##### 高空売りの連続日数 上位5業種（{threshold}以上が続いている業種）")
+    if ranked.empty:
+        st.caption(f"空売り比率が{threshold}以上で連続している業種はありません。")
+        return
+
+    st.dataframe(
+        _ja_frame(
+            ranked[["sector_name", "streak_days", "short_ratio_pct", "zone_label"]]
+        ).round(2),
+        hide_index=True,
+        use_container_width=True,
+    )
 
 
 def _render_sectors(today_summary: dict, weekly_df: pd.DataFrame) -> None:
@@ -803,20 +1228,44 @@ def _render_sectors(today_summary: dict, weekly_df: pd.DataFrame) -> None:
         y="sector_name",
         color="zone_label",
         orientation="h",
+        labels=_COLUMN_LABELS,
         title="業種別 空売り比率",
     )
     fig.update_layout(height=720, margin=dict(l=10, r=10, t=50, b=10))
     st.plotly_chart(fig, use_container_width=True)
 
-    columns = [
-        "sector_name", "short_ratio_pct", "dod_change",
-        "shrt_with_res_va", "shrt_no_res_va", "total_volume_va", "zone_label",
-    ]
-    st.dataframe(
-        sector_df[[col for col in columns if col in sector_df.columns]],
-        hide_index=True,
-        use_container_width=True,
-    )
+    insight_df = _sector_insight_frame(today_summary)
+    if insight_df.empty:
+        # 文脈を作れない場合でも、素の比率テーブルだけは必ず出す
+        columns = [
+            "sector_name", "short_ratio_pct", "dod_change",
+            "shrt_with_res_va", "shrt_no_res_va", "total_volume_va", "zone_label",
+        ]
+        st.dataframe(
+            _ja_frame(sector_df[[col for col in columns if col in sector_df.columns]]),
+            hide_index=True,
+            use_container_width=True,
+        )
+    else:
+        _render_quadrant_scatter(insight_df)
+
+        st.markdown("##### 業種別の空売り比率と文脈")
+        display_df = _ja_frame(insight_df[
+            [col for col in _SECTOR_TABLE_ORDER if col in insight_df.columns]
+        ])
+        st.dataframe(
+            display_df.round(2),   # 数値列だけ丸まる。生の精度はデータ側に残す
+            hide_index=True,
+            use_container_width=True,
+        )
+        st.caption(
+            "Zスコア／パーセンタイルは、その業種自身の過去60営業日の分布に対する位置。"
+            "業種ごとに空売り比率の平常水準が違う（証券業は元から高く、電気・ガス業は低い）ため、"
+            "生の比率より水準判断に向く。履歴5営業日未満の業種は空欄。"
+            "規制なし構成比が高いほど裁定・ヘッジ色、低いほど方向性の売り色が強い。"
+        )
+
+        _render_streak_ranking(insight_df)
 
     if not weekly_df.empty:
         selected_sector = st.selectbox(
@@ -829,9 +1278,11 @@ def _render_sectors(today_summary: dict, weekly_df: pd.DataFrame) -> None:
             x="date",
             y="short_ratio_pct",
             markers=True,
+            labels=_COLUMN_LABELS,
             title=f"{selected_sector} 空売り比率推移",
         )
         st.plotly_chart(fig, use_container_width=True)
+        _render_index_charts(trend["date"].min(), trend["date"].max(), "sector")
 
 
 def _render_breakdown(today_summary: dict) -> None:
@@ -857,14 +1308,17 @@ def _render_breakdown(today_summary: dict) -> None:
         {"category": "価格規制あり", "value": short_with},
         {"category": "価格規制なし", "value": short_without},
     ])
-    fig = px.pie(df, names="category", values="value", title="JPX空売り内訳")
+    fig = px.pie(
+        df, names="category", values="value",
+        labels=_COLUMN_LABELS, title="JPX空売り内訳",
+    )
     fig.update_layout(height=420, margin=dict(l=10, r=10, t=50, b=10))
     st.plotly_chart(fig, use_container_width=True)
 
     signals = today_summary.get("flow_signals", [])
     if signals:
         st.subheader("機械判定シグナル")
-        st.dataframe(pd.DataFrame(signals), hide_index=True, use_container_width=True)
+        st.dataframe(_ja_frame(pd.DataFrame(signals)), hide_index=True, use_container_width=True)
 
 
 def _render_market_theme_tab(selected_date: str, today_summary: dict) -> None:
@@ -912,12 +1366,12 @@ def _render_market_theme_tab(selected_date: str, today_summary: dict) -> None:
     saved_themes = get_market_theme_snapshots(selected_date)
     if saved_themes:
         st.subheader("保存済みテーマ判定")
-        st.dataframe(pd.DataFrame(saved_themes), hide_index=True, use_container_width=True)
+        st.dataframe(_ja_frame(pd.DataFrame(saved_themes)), hide_index=True, use_container_width=True)
 
     saved_news = get_market_news_snapshots(selected_date)
     if saved_news:
         st.subheader("保存済みニュース")
-        st.dataframe(pd.DataFrame(saved_news), hide_index=True, use_container_width=True)
+        st.dataframe(_ja_frame(pd.DataFrame(saved_news)), hide_index=True, use_container_width=True)
 
     _render_market_theme_history(selected_date)
 
@@ -947,7 +1401,7 @@ def _render_market_theme_history(selected_date: str) -> None:
         if current_themes or previous_themes:
             comparison_rows = build_theme_comparison_rows(current_themes, previous_themes)
             st.dataframe(
-                pd.DataFrame(comparison_rows),
+                _ja_frame(pd.DataFrame(comparison_rows)),
                 hide_index=True,
                 use_container_width=True,
             )
@@ -969,13 +1423,14 @@ def _render_market_theme_history(selected_date: str) -> None:
                 y="score",
                 color="name",
                 markers=True,
+                labels=_COLUMN_LABELS,
                 title="市場テーマ スコア推移",
             )
             fig.update_layout(height=360, margin=dict(l=10, r=10, t=50, b=10))
             st.plotly_chart(fig, use_container_width=True)
 
     st.dataframe(
-        history_df.sort_values(["date", "score"], ascending=[False, False]),
+        _ja_frame(history_df.sort_values(["date", "score"], ascending=[False, False])),
         hide_index=True,
         use_container_width=True,
     )
@@ -1235,7 +1690,7 @@ def _render_report_quality_panel(stored_report, today_summary: dict) -> None:
         cols[3].metric("要確認", len(quality.failed_items))
 
         if failed_rows:
-            st.dataframe(pd.DataFrame(failed_rows), hide_index=True, use_container_width=True)
+            st.dataframe(_ja_frame(pd.DataFrame(failed_rows)), hide_index=True, use_container_width=True)
         else:
             st.success("品質チェックで重大な問題は検出されませんでした。")
 
@@ -1246,7 +1701,7 @@ def _render_report_quality_panel(stored_report, today_summary: dict) -> None:
         )
         if show_passed:
             st.dataframe(
-                pd.DataFrame(quality.to_rows(include_passed=True)),
+                _ja_frame(pd.DataFrame(quality.to_rows(include_passed=True))),
                 hide_index=True,
                 use_container_width=True,
             )
@@ -1387,6 +1842,7 @@ def _render_report_quality_history(report_dates: list[str]) -> None:
             x="date",
             y="score_pct",
             markers=True,
+            labels=_COLUMN_LABELS,
             title="AIレポート品質スコア推移",
         )
         fig.update_layout(height=300, margin=dict(l=10, r=10, t=50, b=10))
@@ -1865,8 +2321,6 @@ def _render_us_comparison_chart(short_df: pd.DataFrame) -> None:
 
 def _render_us_ticker_detail(short_df: pd.DataFrame, price_df: Optional[pd.DataFrame]) -> None:
     """1銘柄について株価とショート比率を重ね、過去の平常域も示す。"""
-    import plotly.graph_objects as go
-
     st.markdown("#### 株価とショート比率の重ね合わせ")
     st.caption(
         "同じ時間軸で株価（左軸）とショート比率（右軸）を並べます。"

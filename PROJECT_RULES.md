@@ -4,7 +4,7 @@
 > 本ファイルへの参照のみを記載し、ルール本文を複製しないこと。
 > 新しいAIエージェントを導入する場合も、そのエージェントの規約ファイルから本ファイルを参照させるだけでよい。
 
-- 最終更新: 2026-08-25（テスト基準を228件へ更新：Gemini のリトライ／退避・設定正本化のテスト15件の追加）
+- 最終更新: 2026-08-25（テスト基準を252件へ更新：指数チャート併置と業種別文脈の追加に伴い24件追加）
 - 対象プロジェクト: short-ratio-intel（JPX空売り比率の取得・分析・Gemini AIレポート生成 Streamlit アプリ）
 - 公開区分: L3（コードは一般公開。ナレッジ原本・Secrets・個人データはリポジトリ外で非公開管理）
 
@@ -75,7 +75,7 @@
 - **技術スタック**: Python 3.12（Streamlit Community Cloud 固定。新しすぎる Python は固定依存の wheel が無くビルド失敗する）/
   pandas 2.2.0 / SQLAlchemy 2.0.27 / psycopg2-binary / pydantic 2.6.0 / loguru / feedparser / Streamlit / Gemini API / pytest
 - **起動コマンド**: `streamlit run app/streamlit_app.py`（本番は Streamlit Community Cloud・bcrypt ログイン付き。main へ push すると自動再デプロイ）
-- **テストコマンド**: `pytest`（基準: 全228件パス。2026-08-25 実測 14秒。Gemini のリトライ／退避・設定正本化のテストを追加）
+- **テストコマンド**: `pytest`（基準: 全252件パス。2026-08-25 実測 14秒。指数チャート併置・業種別文脈のテストを追加）
 - **DBスキーマの正**: `src/storage/db.py` の `get_engine()` が `DATABASE_URL` ありで Supabase(PostgreSQL)、無しでローカル SQLite に切替。
   スキーマ定義の正本ファイルは未確認（`src/storage/` 配下を参照）
 - **データソースと取得条件**:
@@ -88,6 +88,11 @@
   - 業種別株価指数の騰落率: nikkei225jp.com の履歴JS（`src/macro_context/sector_price.py`）。
     値に業種名が付かず**並び順のみが同定手段**のため、仕様は `docs/data_sources/sector_price_index.md` を正とする
   - 米国: FINRA CNMS（日次フロー）/ FINRA公式API（空売り残高・隔週）/ Yahoo chart API（日足）。いずれも認証不要
+  - 指数の値動き: 日経平均の四本値は Yahoo chart API `^N225`、日経平均・TOPIXの終値は nikkei225jp.com。
+    **TOPIXの四本値は無料・認証不要の範囲に存在しない**（Yahooは `^TPX`/`^TOPX`/`998405.T` すべて空、
+    stock-marketdata.com は終値のみ）。連動ETFで代用すると縦軸がETF価格になるため使わない。
+    nikkei225jp.com の足は 15:00 UTC＝翌 00:00 JST スタンプなので、日付変換は必ず `_jst_date()` を通す
+    （生の ms を使うと取引日が1日ずれる。2026-08-25 に実データで検出して修正）
 - **AIモデル（Gemini）の扱い**:
   - モデル指定の正本は `config/settings.py` の `GEMINI_MODEL_DEFAULT` **1箇所だけ**。
     workflow には env を置かない（二重管理事故の防止。2026-08-25 に削除）。

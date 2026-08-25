@@ -3,7 +3,7 @@ Gemini API へのプロンプトを動的に構築するモジュール
 """
 import json
 from loguru import logger
-from src.macro_context.sector_price import format_quadrant
+from src.analyzer.sector_insight import build_sector_insights, format_sector_prompt_line
 from config.settings import CURRENT_MACRO_CONTEXT, MARKET_NEWS_AUTO_FETCH
 from config.signal_thresholds import SIGNAL_THRESHOLDS
 from src.knowledge.loader import load_effective_knowledge, load_external_knowledge
@@ -225,32 +225,10 @@ def build_user_prompt(
     # 業種別株価指数の前日騰落率（取得できなければ従来どおり比率のみで組み立てる）
     sector_returns = _safe_sector_returns(target_date)
 
-    # セクターデータを整形
-    sector_lines = []
-    for s in today_summary.get("sector_data", []):
-        dod = s.get("dod_change")
-        dod_str = f"{dod:+.1f}pt" if dod is not None else "N/A"
-        total_volume = s.get("total_volume_va", 0) or 0
-        short_with = s.get("shrt_with_res_va", 0) or 0
-        short_without = s.get("shrt_no_res_va", 0) or 0
-        total_short = s.get("total_short_va", short_with + short_without) or 0
-        with_ratio = short_with / total_volume * 100 if total_volume else 0
-        without_ratio = short_without / total_volume * 100 if total_volume else 0
-        without_share = short_without / total_short * 100 if total_short else 0
-
-        price = sector_returns.get(s.get("s33_code"))
-        change_pct = price.get("change_pct") if price else None
-        price_str = f"株価{change_pct:+.2f}%" if change_pct is not None else "株価N/A"
-        quadrant = format_quadrant(dod, change_pct)
-
-        sector_lines.append(
-            f"{s['sector_name']:20s}: 総空売り{s['short_ratio_pct']:5.1f}% ({dod_str}) / "
-            f"{price_str} / "
-            f"規制あり{with_ratio:4.1f}% / 規制なし{without_ratio:4.1f}% "
-            f"(規制なし構成比{without_share:4.1f}%) / {s['zone_label']}"
-            + (f" / {quadrant}" if quadrant else "")
-        )
-    sector_table = "\n".join(sector_lines)
+    # セクターデータを整形。計算は sector_insight に集約してあり、
+    # Streamlit の業種タブが表示するのと同じ数字をここでも使う（AIと画面の食い違い防止）。
+    sector_rows = build_sector_insights(today_summary, weekly_df, sector_returns)
+    sector_table = "\n".join(format_sector_prompt_line(row) for row in sector_rows)
 
     # 週次推移（JPX公式の市場全体データを優先）
     weekly_summary = ""

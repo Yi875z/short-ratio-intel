@@ -250,3 +250,36 @@ def test_pipeline_records_the_model_actually_used(monkeypatch):
     assert used_model == "model-backup"
     assert saved["model_used"] == "model-backup"
     assert chars == len("# レポート本文")
+
+
+def test_job_timeout_covers_the_whole_fallback_chain():
+    """GEMINI_REQUEST_TIMEOUT_SEC を伸ばすなら workflow の timeout-minutes も伸ばすこと。
+
+    job 側が短いと退避モデルへ到達する前に打ち切られ、自動退避が働かないまま
+    レポートが欠落する（2026-08-24 の欠落と同じ結果になる）。設定が片方だけ
+    動くのを防ぐため、最悪ケースの所要時間と job の上限を突き合わせる。
+    """
+    import re
+    from pathlib import Path
+
+    import config.settings as settings
+
+    root = Path(__file__).resolve().parent.parent
+    workflow = (root / ".github" / "workflows" / "daily_fetch.yml").read_text(encoding="utf-8")
+    job_minutes = int(re.search(r"^\s*timeout-minutes:\s*(\d+)", workflow, re.M).group(1))
+
+    chain = [settings.GEMINI_MODEL] + [
+        m for m in settings.GEMINI_FALLBACK_MODELS if m != settings.GEMINI_MODEL
+    ]
+    worst_case_minutes = (
+        len(chain)
+        * gc.GeminiReportGenerator.MAX_RETRIES
+        * settings.GEMINI_REQUEST_TIMEOUT_SEC
+        / 60
+    )
+
+    assert job_minutes >= worst_case_minutes, (
+        f"job の上限 {job_minutes}分 < 最悪ケース {worst_case_minutes:.0f}分"
+        f"（モデル{len(chain)}件 × {gc.GeminiReportGenerator.MAX_RETRIES}回 × "
+        f"{settings.GEMINI_REQUEST_TIMEOUT_SEC}秒）"
+    )

@@ -29,7 +29,11 @@ on:
 jobs:
   fetch:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # AIレポート生成の最悪ケースに合わせる。
+    # config/settings.py の GEMINI_REQUEST_TIMEOUT_SEC(180秒) × MAX_RETRIES(3) × 退避先を含む
+    # 3モデル ≒ 27分 + 取得処理。ここが短いと退避モデルへ到達する前に打ち切られ、
+    # せっかくの自動退避が働かずレポートが欠落する（2026-08-25 に 20分から拡大）。
+    timeout-minutes: 35
 
     env:
       TZ: Asia/Tokyo

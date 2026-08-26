@@ -4,7 +4,7 @@
 > 本ファイルへの参照のみを記載し、ルール本文を複製しないこと。
 > 新しいAIエージェントを導入する場合も、そのエージェントの規約ファイルから本ファイルを参照させるだけでよい。
 
-- 最終更新: 2026-08-25（テスト基準を252件へ更新：指数チャート併置と業種別文脈の追加に伴い24件追加）
+- 最終更新: 2026-08-25（既定モデルを gemini-3.7-flash へ試験移行。テスト基準を271件へ更新）
 - 対象プロジェクト: short-ratio-intel（JPX空売り比率の取得・分析・Gemini AIレポート生成 Streamlit アプリ）
 - 公開区分: L3（コードは一般公開。ナレッジ原本・Secrets・個人データはリポジトリ外で非公開管理）
 
@@ -75,7 +75,7 @@
 - **技術スタック**: Python 3.12（Streamlit Community Cloud 固定。新しすぎる Python は固定依存の wheel が無くビルド失敗する）/
   pandas 2.2.0 / SQLAlchemy 2.0.27 / psycopg2-binary / pydantic 2.6.0 / loguru / feedparser / Streamlit / Gemini API / pytest
 - **起動コマンド**: `streamlit run app/streamlit_app.py`（本番は Streamlit Community Cloud・bcrypt ログイン付き。main へ push すると自動再デプロイ）
-- **テストコマンド**: `pytest`（基準: 全252件パス。2026-08-25 実測 14秒。指数チャート併置・業種別文脈のテストを追加）
+- **テストコマンド**: `pytest`（基準: 全271件パス。2026-08-25 実測 14秒。指数チャート併置・業種別文脈・日本語化のテストを追加）
 - **DBスキーマの正**: `src/storage/db.py` の `get_engine()` が `DATABASE_URL` ありで Supabase(PostgreSQL)、無しでローカル SQLite に切替。
   スキーマ定義の正本ファイルは未確認（`src/storage/` 配下を参照）
 - **データソースと取得条件**:
@@ -94,6 +94,12 @@
     nikkei225jp.com の足は 15:00 UTC＝翌 00:00 JST スタンプなので、日付変換は必ず `_jst_date()` を通す
     （生の ms を使うと取引日が1日ずれる。2026-08-25 に実データで検出して修正）
 - **AIモデル（Gemini）の扱い**:
+  - 既定モデルは `gemini-3.7-flash`（2026-08-25〜、**試験運用中**）。失敗時は 3.6 → 3.5 へ自動退避する。
+    3.7 は速い日で 85.5秒だが遅い日は 600秒超に化ける実績があるため、恒久採用の判断は
+    数日ぶんの `check_gemini_model` の記録と `ai_reports.model_used` の退避頻度を見て行う。
+    退避が頻発するようなら `GEMINI_MODEL_DEFAULT` を 3.6 に戻す（1行の変更で済む）。
+    **`GEMINI_REQUEST_TIMEOUT_SEC` を伸ばすときは `daily_fetch.yml` の `timeout-minutes` も必ず伸ばす**
+    （job が先に切れると退避先へ到達せずレポートが欠落する。テストで突き合わせ済み）
   - モデル指定の正本は `config/settings.py` の `GEMINI_MODEL_DEFAULT` **1箇所だけ**。
     workflow には env を置かない（二重管理事故の防止。2026-08-25 に削除）。
     環境変数での上書きは緊急避難用に残すが、効いていれば起動ログと Streamlit 画面に警告が出る。

@@ -21,6 +21,7 @@ from src.storage.models import (
     AiReport,
     Base,
     KnowledgeDocument,
+    MarketBreadthDaily,
     MarketNewsSnapshot,
     MarketShortRatioDaily,
     MarketThemeSnapshot,
@@ -351,6 +352,123 @@ def get_market_short_ratio_df(
         "total_short_va": r.total_short_va,
         "total_volume_va": r.total_volume_va,
     } for r in rows])
+
+
+# ------------------------------------------------------------------
+# 市場の広がり（騰落銘柄数・指数の値動き）
+#
+# 出所は J-Quants API v2。空売り集計とは対象範囲が異なるため別テーブルにしてある。
+# 両者を跨いだ比率化は行わない（market_scope 列がその境界を明示する）。
+# ------------------------------------------------------------------
+
+def upsert_market_breadth_records(records: list[dict]) -> int:
+    """騰落銘柄数レコードをUPSERTする。
+
+    レコードは market_breadth.BreadthCounts.to_dict() 形式に
+    TOPIX の値を足した dict。欠落フィールドは None のまま保存する
+    （前日値のコピーや補間は行わない）。
+    同一 (date, market_scope) の再投入で行数は増えない（冪等）。
+    """
+    if not records:
+        return 0
+
+    now = datetime.utcnow()
+    rows: list[dict] = []
+    for r in records:
+        date_value = r.get("date")
+        scope = r.get("scope") or r.get("market_scope")
+        if not date_value or not scope:
+            logger.warning(f"騰落銘柄数の必須項目が欠落: {r}")
+            continue
+        rows.append({
+            "date": date_value,
+            "market_scope": scope,
+            "scope_label": r.get("scope_label") or "",
+            "advancing_issues": r.get("advancing"),
+            "declining_issues": r.get("declining"),
+            "unchanged_issues": r.get("unchanged"),
+            "not_compared_issues": r.get("not_compared"),
+            "universe_issues": r.get("universe"),
+            "topix_close": r.get("topix_close"),
+            "topix_prev_close": r.get("topix_prev_close"),
+            "topix_change_pct": r.get("topix_change_pct"),
+            "source": r.get("source") or "JQUANTS_V2",
+            "ingested_at": now,
+        })
+
+    if not rows:
+        return 0
+
+    engine = get_db_engine()
+    with Session(engine) as session:
+        saved = _apply_bulk_upsert(
+            session, MarketBreadthDaily, rows, ("date", "market_scope")
+        )
+        session.commit()
+
+    logger.info(f"騰落銘柄数 {saved}件を保存しました")
+    return saved
+
+
+def get_market_breadth_df(
+    date: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    market_scope: Optional[str] = None,
+) -> pd.DataFrame:
+    """条件指定で騰落銘柄数を DataFrame で返す。"""
+    engine = get_db_engine()
+
+    with Session(engine) as session:
+        stmt = select(MarketBreadthDaily).order_by(
+            MarketBreadthDaily.date, MarketBreadthDaily.market_scope
+        )
+        if date:
+            stmt = stmt.where(MarketBreadthDaily.date == date)
+        if from_date:
+            stmt = stmt.where(MarketBreadthDaily.date >= from_date)
+        if to_date:
+            stmt = stmt.where(MarketBreadthDaily.date <= to_date)
+        if market_scope:
+            stmt = stmt.where(MarketBreadthDaily.market_scope == market_scope)
+
+        rows = session.execute(stmt).scalars().all()
+
+    if not rows:
+        return pd.DataFrame()
+
+    return pd.DataFrame([{
+        "date": r.date,
+        "market_scope": r.market_scope,
+        "scope_label": r.scope_label,
+        "advancing_issues": r.advancing_issues,
+        "declining_issues": r.declining_issues,
+        "unchanged_issues": r.unchanged_issues,
+        "not_compared_issues": r.not_compared_issues,
+        "universe_issues": r.universe_issues,
+        "topix_close": r.topix_close,
+        "topix_prev_close": r.topix_prev_close,
+        "topix_change_pct": r.topix_change_pct,
+    } for r in rows])
+
+
+def get_saved_market_breadth_dates(market_scope: Optional[str] = None) -> list[str]:
+    """保存済み騰落銘柄数の日付一覧を新しい順で返す。"""
+    engine = get_db_engine()
+    with Session(engine) as session:
+        stmt = select(MarketBreadthDaily.date).distinct()
+        if market_scope:
+            stmt = stmt.where(MarketBreadthDaily.market_scope == market_scope)
+        rows = session.execute(
+            stmt.order_by(desc(MarketBreadthDaily.date))
+        ).scalars().all()
+    return list(rows)
+
+
+def get_market_breadth_latest_date(market_scope: Optional[str] = None) -> Optional[str]:
+    """保存済み騰落銘柄数の最新日付を返す。"""
+    dates = get_saved_market_breadth_dates(market_scope)
+    return dates[0] if dates else None
 
 
 # ------------------------------------------------------------------

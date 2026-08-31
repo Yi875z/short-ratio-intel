@@ -75,6 +75,51 @@ class MarketShortRatioDaily(Base):
         )
 
 
+class MarketBreadthDaily(Base):
+    """市場の広がり（騰落銘柄数）と指数の値動き 日次データ
+
+    出所は J-Quants API v2（Light 以上）。全銘柄日足と上場銘柄一覧から自前で数える。
+
+    ⚠️ 空売り集計（short_ratio_daily / market_short_ratio_daily）とは**対象範囲が違う**。
+       あちらは東証全体（ETF・REIT 込み）、こちらは market_scope 列の市場区分ごと。
+       両者を跨いだ加減乗除・比率化は行わないこと。
+    ⚠️ 騰落判定は調整後終値どうしの比較（分割・併合をまたいでも壊れないため）。
+       前日または当日の足が無い銘柄は not_compared に積み、補間しない。
+    """
+
+    __tablename__ = "market_breadth_daily"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    date = Column(String(10), nullable=False, index=True)          # YYYY-MM-DD
+    market_scope = Column(String(20), nullable=False, index=True)  # TSE_PRIME 等
+    scope_label = Column(String(50), nullable=False, default="")   # 画面表示用の日本語名
+
+    # raw列（数え上げた生の件数）
+    advancing_issues = Column(Integer, nullable=True)
+    declining_issues = Column(Integer, nullable=True)
+    unchanged_issues = Column(Integer, nullable=True)
+    not_compared_issues = Column(Integer, nullable=True)   # 判定できなかった銘柄数
+    universe_issues = Column(Integer, nullable=True)       # 対象日時点の母集団
+
+    # 指数の値動き。scope に依らず市場共通の文脈なので同じ行に持たせる。
+    topix_close = Column(Float, nullable=True)
+    topix_prev_close = Column(Float, nullable=True)
+    topix_change_pct = Column(Float, nullable=True)
+
+    source = Column(String(32), nullable=False, default="JQUANTS_V2")
+    ingested_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("date", "market_scope", name="uq_breadth_date_scope"),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<MarketBreadthDaily date={self.date} scope={self.market_scope} "
+            f"adv={self.advancing_issues} dec={self.declining_issues}>"
+        )
+
+
 class AiReport(Base):
     """AIが生成した日次レポート"""
 

@@ -18,8 +18,24 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 # ---- J-Quants ----
+# v2 は x-api-key ヘッダ方式（有効期限なし）。v1 のメール+パスワードによる
+# refreshToken → idToken の交換は不要になった。
+#
+# ⚠️ 契約プランで叩けるエンドポイントが変わる。2026-08-29 に実キーで実測した結果:
+#   Light で 200: /equities/master, /equities/bars/daily, /indices/bars/daily/topix,
+#                 /markets/calendar, /equities/investor-types
+#   Light で 403: /markets/short-ratio（業種別空売り比率）, /indices/bars/daily（業種別指数）
+# したがって空売り比率そのものは J-Quants からは取れない。従来どおり JPX 公式PDF
+# （jpx_pdf_client.py）が正で、J-Quants は騰落銘柄数・TOPIX・営業日カレンダーに使う。
 JQUANTS_API_KEY: str = os.getenv("JQUANTS_API_KEY", "")
-JQUANTS_BASE_URL: str = "https://api.jquants.com"
+JQUANTS_BASE_URL: str = "https://api.jquants.com"  # v1 時代の名残。現在は未使用
+JQUANTS_API_BASE_URL: str = os.getenv("JQUANTS_API_BASE_URL", "https://api.jquants.com/v2")
+JQUANTS_REQUEST_TIMEOUT_SEC: int = int(os.getenv("JQUANTS_REQUEST_TIMEOUT_SEC", "60"))
+# Light は 60 リクエスト/分。バックフィルで上限に触れないよう最短間隔を空ける。
+JQUANTS_MIN_REQUEST_INTERVAL_SEC: float = float(
+    os.getenv("JQUANTS_MIN_REQUEST_INTERVAL_SEC", "1.05")
+)
+JQUANTS_MAX_RETRIES: int = int(os.getenv("JQUANTS_MAX_RETRIES", "3"))
 
 # ---- Gemini ----
 # Free Tier の 20 req/日は GenerateRequestsPerDayPerProjectPerModel-FreeTier、

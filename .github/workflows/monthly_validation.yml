@@ -1,0 +1,71 @@
+name: 業種別フロー特徴量 月次検証
+
+# なぜ自動化するか:
+#   「半年後に再検証する」という宿題を人間の記憶や引き継ぎ文書に預けると落ちる。
+#   実例として 2026-07-03 の引き継ぎメモにあった「H2に日本GDPの公表日を追記」は
+#   2026-09-01 時点で未着手のまま、カレンダーに穴が空いて誰も気づかなかった。
+#   検証スクリプトは決定論的で外部APIを叩かないため、機械に持たせるのが確実。
+#
+# このワークフローがやること:
+#   Supabase を読んで検証レポートを再生成し、要点を Slack に投げる。
+#   結果の解釈も判定の追加も行わない（効いていなければ「効いていない」と出るだけ）。
+
+on:
+  schedule:
+    # 毎月1日 08:12 JST（UTC 前日 23:12）。
+    # 分をずらすのは GitHub のスケジュール混雑を避けるため（daily_fetch と同じ方針）。
+    - cron: '12 23 28-31 * *'
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    # DBを読んで集計するだけ。外部APIもAI生成も無いので短くてよい。
+    timeout-minutes: 15
+
+    env:
+      TZ: Asia/Tokyo
+      # 読み取りのみ。書き込みは行わない。
+      DATABASE_URL:      ${{ secrets.DATABASE_URL }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 月初のみ実行する（cron の日付指定を月末〜月初で絞り込む）
+        id: guard
+        run: |
+          if [ "$(date +%d)" = "01" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "月初ではないためスキップします"
+          fi
+
+      - name: 検証レポートを生成
+        if: steps.guard.outputs.run == 'true'
+        run: python -m scripts.validate_sector_features --out docs/validation_phase1.md
+
+      - name: レポートを成果物として保存
+        if: steps.guard.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-report
+          path: docs/validation_phase1.md
+          retention-days: 90
+
+      - name: Slack へ要点を通知
+        if: steps.guard.outputs.run == 'true'
+        run: python -m scripts.notify_validation_summary

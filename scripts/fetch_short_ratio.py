@@ -62,6 +62,7 @@ from src.macro_context.context_builder import (
     build_market_context_bundle,
     build_theme_snapshot_dicts,
 )
+from src.macro_context.pipeline_health import collect_health_issues, format_health_block
 from src.storage.db import (
     get_latest_date,
     get_market_short_ratio_df,
@@ -414,6 +415,18 @@ def run(args: argparse.Namespace) -> int:
     )
     if highlights:
         summary += "\n" + highlights
+
+    # 自己点検。カレンダーの穴やデータの停止を「静かに落ちる」前に鳴らす。
+    # 引き継ぎ文書に書いた宿題は落ちる（2026-07-03 のGDP追記が2ヶ月放置された実例あり）ため、
+    # 期限・条件つきの確認は人間の記憶ではなく毎日の通知に載せる。
+    try:
+        health_block = format_health_block(collect_health_issues())
+    except Exception as exc:  # noqa: BLE001 点検の失敗で本処理を落とさない
+        logger.warning(f"自己点検に失敗（処理は継続）: {exc}")
+        health_block = ""
+    if health_block:
+        summary += "\n\n" + health_block
+
     logger.success(summary)
     _notify_slack(summary)
     return 0

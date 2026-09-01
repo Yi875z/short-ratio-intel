@@ -4,7 +4,7 @@
 > 本ファイルへの参照のみを記載し、ルール本文を複製しないこと。
 > 新しいAIエージェントを導入する場合も、そのエージェントの規約ファイルから本ファイルを参照させるだけでよい。
 
-- 最終更新: 2026-08-25（既定モデルを gemini-3.7-flash へ試験移行。テスト基準を271件へ更新）
+- 最終更新: 2026-08-31（需給モニターを追加。J-Quants API v2 を導入し騰落銘柄数・TOPIXを自前算出。テスト基準を362件へ更新）
 - 対象プロジェクト: short-ratio-intel（JPX空売り比率の取得・分析・Gemini AIレポート生成 Streamlit アプリ）
 - 公開区分: L3（コードは一般公開。ナレッジ原本・Secrets・個人データはリポジトリ外で非公開管理）
 
@@ -75,7 +75,7 @@
 - **技術スタック**: Python 3.12（Streamlit Community Cloud 固定。新しすぎる Python は固定依存の wheel が無くビルド失敗する）/
   pandas 2.2.0 / SQLAlchemy 2.0.27 / psycopg2-binary / pydantic 2.6.0 / loguru / feedparser / Streamlit / Gemini API / pytest
 - **起動コマンド**: `streamlit run app/streamlit_app.py`（本番は Streamlit Community Cloud・bcrypt ログイン付き。main へ push すると自動再デプロイ）
-- **テストコマンド**: `pytest`（基準: 全271件パス。2026-08-25 実測 14秒。指数チャート併置・業種別文脈・日本語化のテストを追加）
+- **テストコマンド**: `pytest`（基準: 全362件パス。2026-08-31 実測 21秒。需給モニター一式のテストを追加）
 - **DBスキーマの正**: `src/storage/db.py` の `get_engine()` が `DATABASE_URL` ありで Supabase(PostgreSQL)、無しでローカル SQLite に切替。
   スキーマ定義の正本ファイルは未確認（`src/storage/` 配下を参照）
 - **データソースと取得条件**:
@@ -89,10 +89,18 @@
     値に業種名が付かず**並び順のみが同定手段**のため、仕様は `docs/data_sources/sector_price_index.md` を正とする
   - 米国: FINRA CNMS（日次フロー）/ FINRA公式API（空売り残高・隔週）/ Yahoo chart API（日足）。いずれも認証不要
   - 指数の値動き: 日経平均の四本値は Yahoo chart API `^N225`、日経平均・TOPIXの終値は nikkei225jp.com。
-    **TOPIXの四本値は無料・認証不要の範囲に存在しない**（Yahooは `^TPX`/`^TOPX`/`998405.T` すべて空、
+    **TOPIXの四本値は無料・認証不要の範囲には存在しない**（Yahooは `^TPX`/`^TOPX`/`998405.T` すべて空、
     stock-marketdata.com は終値のみ）。連動ETFで代用すると縦軸がETF価格になるため使わない。
+    ただし 2026-08-31 の J-Quants Light 契約以降、**TOPIXの四本値は `/indices/bars/daily/topix` で取得できる**
+    （需給モニターの騰落率はこちらを正とする。既存の指数チャートは従来のまま）。
     nikkei225jp.com の足は 15:00 UTC＝翌 00:00 JST スタンプなので、日付変換は必ず `_jst_date()` を通す
     （生の ms を使うと取引日が1日ずれる。2026-08-25 に実データで検出して修正）
+  - 騰落銘柄数・TOPIX・取引カレンダー: **J-Quants API v2**（Light 契約、`x-api-key` ヘッダ・有効期限なし）。
+    全銘柄日足と上場銘柄一覧から騰落銘柄数を自前で数える。契約プランの可否・算出ルール・
+    公表値との差は `docs/data_sources/market_breadth_jquants.md` を正とする。
+    **Light では業種別空売り比率API（`/markets/short-ratio`）と業種別指数（`/indices/bars/daily`）が 403**。
+    したがって空売り比率の取得元は今後も JPX 公開PDF が正であり、業種別騰落率は nikkei225jp.com のまま。
+    このステップは **fail-soft**（失敗してもパイプラインを止めない）。空売り比率の取得0件とは扱いが違う
 - **AIモデル（Gemini）の扱い**:
   - 既定モデルは `gemini-3.7-flash`（2026-08-25〜、**試験運用中**）。失敗時は 3.6 → 3.5 へ自動退避する。
     3.7 は速い日で 85.5秒だが遅い日は 600秒超に化ける実績があるため、恒久採用の判断は
@@ -128,6 +136,16 @@
   リポ内 `src/knowledge/files/*.md` はローカル fallback 用の縮約版。更新は `python -m scripts.upload_knowledge_to_supabase`。
   読込は loader が Supabase 優先→ローカル fallback。
 - AIレポートのJSONは `gemini_client.py` で `max_output_tokens=32768` ＋ `json-repair` で堅牢化済み。この仕組みを壊さない。
+- **需給モニターの算出規約**（`src/analyzer/pressure_metrics.py` / `pressure_regime.py`）:
+  空売り比率は残高ではなく**日次フロー**として扱う（残高の語彙を持ち込まない）。
+  **比率と絶対額は別の型に分ける**（比率が同じでも商いが半分なら実額は半分）。
+  比率の分母は必ず同一行の合計売買代金＝JPX公式定義 (a)/(d)・(b)/(d)・(c)/(d) に一致させる。
+  `*_va` 列の単位は**百万円**（PDF本文の【単位：百万円】で確認済み）。
+  **価格規制なしを弱気と断定しない**（構成比が高い日は確信度を下げるだけで判定は消さない）。
+  **対象範囲の違うものを混ぜない**（騰落銘柄数は市場区分別、空売り集計は東証全体＋外国株券等）。
+  **単一の固定閾値で判定しない**。指標は自分自身の直近20営業日分布に対するZスコアと
+  5日平均比へ変換してから複数条件で判定する。閾値は `config/pressure_thresholds.py` に集約。
+  **欠損は補間しない**。入力が欠けたレジームは候補から外し、欠損入力名を画面に出す。
 - 詳細な運用手順は `docs/operation_manual.md`、クラウド環境の再構築は `DEPLOY.md` を正とする。
 
 ---

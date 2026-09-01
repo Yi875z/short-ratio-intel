@@ -46,8 +46,14 @@ jobs:
       # 未設定なら機関フロー突合はスキップ（fail-soft）。
       JPX_ANALYSIS_SUPABASE_URL: ${{ secrets.JPX_ANALYSIS_SUPABASE_URL }}
       JPX_ANALYSIS_SUPABASE_KEY: ${{ secrets.JPX_ANALYSIS_SUPABASE_KEY }}
-      # ※ データ取得は stock-marketdata.com スクレイピング + JPX公開PDF で行うため
-      #   J-Quants の認証キーは不要（jquants_client.py は名前に反しスクレイパー）
+      # ※ 空売り比率の取得は stock-marketdata.com スクレイピング + JPX公開PDF で行う
+      #   （jquants_client.py は名前に反しスクレイパー。J-Quants は使っていない）。
+      #   Light プランでは業種別空売り比率API（/markets/short-ratio）が 403 のため、
+      #   空売り比率の取得元は今後も JPX 公開PDF が正である。
+      # J-Quants API v2（Light 以上）。騰落銘柄数・TOPIX騰落率・取引カレンダーに使う。
+      # 未設定なら騰落銘柄数はスキップし、需給モニターに「未取得」と表示される
+      # （fail-soft。パイプライン全体は止まらない）。
+      JQUANTS_API_KEY:   ${{ secrets.JQUANTS_API_KEY }}
       # 任意: 完了/失敗サマリーの Slack 通知
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
       # 使用モデルは【あえてここに置かない】。config/settings.py の

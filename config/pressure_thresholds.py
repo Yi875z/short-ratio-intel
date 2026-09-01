@@ -41,6 +41,11 @@ class PressureThresholds:
     short_value_surge_z: float = 1.0        # 明確な増加
     short_value_mild_z: float = 0.5         # 緩やかな増加
     short_value_quiet_z: float = 0.5        # これ未満なら「実額は増えていない」
+    # 「実額は増えていない」はZスコアと5日平均比の両方が同意したときだけ認める。
+    # 20日分布では平常でも直近5日が静かだと平均比が大きく跳ねることがあり
+    # （2026-06-04 実データ: Z +0.46 に対し5日平均比 +40.2%）、片方だけで
+    # 判定すると「実額は増えていない」という理由文が画面の数字と矛盾する。
+    short_value_quiet_vs_avg_pct: float = 10.0
 
     # --- 流動性（市場売買代金）---
     volume_thin_z: float = -1.0             # 商いが細い

@@ -246,6 +246,14 @@ class PressureRegimeClassifier:
                 f"総空売り代金のZスコアが {t.short_value_quiet_z:+.1f} 未満（実額は増えていない）",
                 "総空売り代金", m.short_value_change.zscore, _lt(t.short_value_quiet_z),
             ),
+            # Zスコアと5日平均比の両方が「増えていない」と言ったときだけ薄商いと呼ぶ。
+            # 片方だけだと理由文が画面上の数字と矛盾する（2026-06-04 実データで検出）。
+            Condition(
+                f"総空売り代金が5日平均比 {t.short_value_quiet_vs_avg_pct:+.0f}% 未満"
+                "（直近比でも増えていない）",
+                "総空売り代金", m.short_value_change.vs_avg_pct,
+                _lt(t.short_value_quiet_vs_avg_pct), "%",
+            ),
         ]
         return self._build(REGIME_THIN_MARKET, conditions, m)
 

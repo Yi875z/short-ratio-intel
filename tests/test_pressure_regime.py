@@ -114,6 +114,26 @@ def test_薄商いは比率が高くても実額が増えていなければ成�
     assert REGIME_SELL_PRESSURE not in (result.primary, *result.also_matched)
 
 
+def test_Zは低くても5日平均比が伸びていれば薄商いと呼ばない():
+    """2026-06-04 の実データで見つかった矛盾の回帰。
+
+    20日分布では平常（Z +0.46）でも、直近5日が静かだと平均比は +40% に跳ねる。
+    片方だけで判定すると「実額は増えていない」という理由文が画面の数字と食い違う。
+    両方が同意したときだけ薄商いと呼ぶ。
+    """
+    result = _classify(
+        volume_z=-0.51, volume_vs_avg=-19.7,
+        ratio_z=0.59,
+        short_z=0.46, short_vs_avg=40.2,   # Zは低いが直近比では大きく増えている
+        topix=-1.11, net_breadth=-0.43,
+    )
+    assert result.primary != REGIME_THIN_MARKET
+
+    verdict = next(v for v in result.verdicts if v.regime == REGIME_THIN_MARKET)
+    assert verdict.matched is False
+    assert any("5日平均比" in item for item in verdict.unsatisfied)
+
+
 def test_吸収は売りが出ているのに価格が下がらない日に成立する():
     result = _classify(short_z=1.2, short_vs_avg=10.0, topix=0.8, with_ratio_z=0.2)
     assert result.primary == REGIME_ABSORPTION

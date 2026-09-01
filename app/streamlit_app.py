@@ -55,6 +55,16 @@ from src.ai_engine.report_quality import (
 from src.analyzer.anomaly_detector import AnomalyDetector
 from src.analyzer.flow_signal_analyzer import FlowSignalAnalyzer
 from src.analyzer.ratio_calculator import RatioCalculator
+# 需給モニター。空売り比率・絶対額・流動性・価格反応を突き合わせてレジームを判定する。
+from src.analyzer.market_breadth import DEFAULT_BREADTH_SCOPE
+from src.analyzer.pressure_metrics import (
+    build_pressure_metrics,
+    format_pct as _fmt_pct,
+    format_signed_pct as _fmt_signed_pct,
+    format_trillion_yen as _fmt_trillion,
+    to_trillion_yen,
+)
+from src.analyzer.pressure_regime import PressureRegimeClassifier
 from src.data_fetcher.jpx_pdf_client import JPXShortSellingClient
 from src.data_fetcher.jquants_client import JQuantsClient
 from src.macro_context.context_builder import (
@@ -72,6 +82,7 @@ from src.storage.db import (
     get_ai_report_dates,
     load_ai_report_quality_comparison,
     get_market_news_snapshots,
+    get_market_breadth_df,
     get_market_short_ratio_df,
     get_market_theme_snapshot_dates,
     get_market_theme_snapshots,
@@ -164,6 +175,7 @@ def main() -> None:
 
     (
         overview_tab,
+        pressure_tab,
         sectors_tab,
         breakdown_tab,
         theme_tab,
@@ -173,12 +185,14 @@ def main() -> None:
         history_tab,
         us_flow_tab,
     ) = st.tabs(
-        ["概要", "業種", "JPX内訳", "市場テーマ", "🌐 市場データ", "📅 カレンダー", "AIレポート", "履歴",
-         "🇺🇸 米国ショート"]
+        ["概要", "⚖️ 需給モニター", "業種", "JPX内訳", "市場テーマ", "🌐 市場データ",
+         "📅 カレンダー", "AIレポート", "履歴", "🇺🇸 米国ショート"]
     )
 
     with overview_tab:
         _render_overview(selected_date, today_summary, market_trend_df, anomalies)
+    with pressure_tab:
+        _render_pressure_monitor(selected_date, market_trend_df)
     with sectors_tab:
         _render_sectors(today_summary, weekly_df)
     with breakdown_tab:
@@ -969,6 +983,307 @@ def _attach_flow_signals(
     summaries = {current_date: calc.get_today_summary(current_date) for current_date in dates}
     history = analyzer.build_history(dates, summaries, market_trend_df)
     today_summary["flow_signal_history"] = history["rows"]
+
+
+# ==================================================================
+# 需給モニター
+#
+# 空売り比率だけでなく、絶対額（代金）・市場流動性・価格反応を突き合わせて
+# 売り圧力を判定する。比率と絶対額は別ブロックに分けて表示し、
+# 対象範囲の違うもの（騰落銘柄数は市場区分別、空売り集計は東証全体）は
+# 同じ数式に入れず、並べて示すだけに留める。
+# ==================================================================
+
+_REGIME_COLORS = {
+    "SELL_PRESSURE": "#c0392b",
+    "THIN_MARKET": "#8e7cc3",
+    "ABSORPTION": "#1e8449",
+    "BROAD_DE-RISKING": "#7b241c",
+    "SHORT_COVER_CANDIDATE": "#1f6fb2",
+    "NEUTRAL": "#7f8c8d",
+}
+
+_CONFIDENCE_LABELS = {
+    "high": "高", "medium": "中", "low": "低", "n/a": "判定不能",
+}
+
+_PRESSURE_HISTORY_DAYS = 20
+
+
+@st.cache_data(ttl=600)
+def _cached_breadth_frame(target_date: str) -> pd.DataFrame:
+    return get_market_breadth_df(date=target_date)
+
+
+def _render_pressure_monitor(selected_date: str, market_trend_df: pd.DataFrame) -> None:
+    st.subheader("⚖️ 需給モニター")
+    st.caption(
+        "空売り比率・空売り代金・市場売買代金・価格反応を突き合わせて売り圧力を判定します。"
+        "比率と絶対額は別々に表示します（比率が同じでも商いが半分なら実額は半分です）。"
+    )
+
+    breadth_frame = _cached_breadth_frame(selected_date)
+    breadth_row, scope_label = _select_breadth_scope(breadth_frame)
+
+    metrics = build_pressure_metrics(selected_date, market_trend_df, breadth_row)
+    if metrics.ratios.total_short_pct is None and metrics.values.market_volume_va is None:
+        st.warning(
+            f"{selected_date} の空売り集計データがありません。"
+            "左メニューからデータ取得を実行してください。"
+        )
+        return
+
+    _render_pressure_ratio_row(metrics)
+    _render_pressure_value_row(metrics)
+    _render_pressure_price_row(metrics, scope_label)
+
+    st.divider()
+    _render_regime_panel(metrics)
+
+    st.divider()
+    _render_pressure_history_chart(selected_date, market_trend_df)
+
+
+def _select_breadth_scope(breadth_frame: pd.DataFrame):
+    """騰落銘柄数の市場区分を選ばせる。無ければ (None, None) を返す。"""
+    if breadth_frame is None or breadth_frame.empty:
+        return None, None
+
+    scopes = list(breadth_frame["market_scope"])
+    default_index = scopes.index(DEFAULT_BREADTH_SCOPE) if DEFAULT_BREADTH_SCOPE in scopes else 0
+    labels = {
+        row["market_scope"]: row["scope_label"] or row["market_scope"]
+        for _, row in breadth_frame.iterrows()
+    }
+    chosen = st.selectbox(
+        "騰落銘柄数の対象市場",
+        scopes,
+        index=default_index,
+        format_func=lambda scope: labels.get(scope, scope),
+        help=(
+            "空売り集計は東証全体（外国株券等を含む）が対象で、この騰落銘柄数とは"
+            "母集団が異なります。両者を割り算せず、並べて読んでください。"
+        ),
+        key="pressure_breadth_scope",
+    )
+    row = breadth_frame[breadth_frame["market_scope"] == chosen].iloc[0].to_dict()
+    return row, labels.get(chosen, chosen)
+
+
+def _render_pressure_ratio_row(metrics) -> None:
+    st.markdown("##### ① 比率（分母＝合計売買代金）")
+    ratios = metrics.ratios
+    cols = st.columns(5)
+    cols[0].metric("空売り比率", _fmt_pct(ratios.total_short_pct),
+                   _pt(_regime_ratio_dod_pt(metrics)))
+    cols[1].metric("価格規制あり比率", _fmt_pct(ratios.with_restriction_pct))
+    cols[2].metric("価格規制なし比率", _fmt_pct(ratios.without_restriction_pct))
+    cols[3].metric("実注文比率", _fmt_pct(ratios.actual_order_pct))
+    cols[4].metric(
+        "規制なし構成比", _fmt_pct(ratios.without_share_pct),
+        help="分母は総空売り代金。高いほど裁定・ヘッジ由来の可能性があり、弱気と断定できません。",
+    )
+
+
+def _render_pressure_value_row(metrics) -> None:
+    st.markdown("##### ② 代金（絶対額・単位は兆円）")
+    values = metrics.values
+    short_change = metrics.short_value_change
+    volume_change = metrics.market_volume_change
+
+    cols = st.columns(4)
+    cols[0].metric(
+        "総空売り代金", _fmt_trillion(values.total_short_va),
+        _fmt_signed_pct(short_change.dod_pct, 1),
+        help="デルタは前営業日比。5日平均比は下段に表示します。",
+    )
+    cols[1].metric("価格規制あり代金", _fmt_trillion(values.with_restriction_va))
+    cols[2].metric("価格規制なし代金", _fmt_trillion(values.without_restriction_va))
+    cols[3].metric(
+        "市場売買代金", _fmt_trillion(values.market_volume_va),
+        _fmt_signed_pct(volume_change.dod_pct, 1),
+    )
+
+    sub = st.columns(4)
+    sub[0].caption(f"空売り代金 5日平均比: {_fmt_signed_pct(short_change.vs_avg_pct, 1)}")
+    sub[1].caption(f"空売り代金 Zスコア: {_z_text(short_change)}")
+    sub[2].caption(f"売買代金 5日平均比: {_fmt_signed_pct(volume_change.vs_avg_pct, 1)}")
+    sub[3].caption(f"売買代金 Zスコア: {_z_text(volume_change)}")
+
+
+def _render_pressure_price_row(metrics, scope_label: str | None) -> None:
+    st.markdown("##### ③ 価格と市場の広がり")
+    price = metrics.price
+    breadth = metrics.breadth
+
+    cols = st.columns(4)
+    cols[0].metric(
+        "TOPIX終値",
+        f"{price.topix_close:,.2f}" if price.topix_close is not None else "—",
+        _fmt_signed_pct(price.topix_change_pct, 2),
+    )
+    cols[1].metric(
+        f"値上がり銘柄数（{scope_label or '—'}）",
+        f"{breadth.advancing:,}" if breadth.advancing is not None else "—",
+    )
+    cols[2].metric(
+        f"値下がり銘柄数（{scope_label or '—'}）",
+        f"{breadth.declining:,}" if breadth.declining is not None else "—",
+    )
+    cols[3].metric(
+        "ネットブレッドス",
+        f"{breadth.net_breadth:+.3f}" if breadth.net_breadth is not None else "—",
+        help="(値上がり − 値下がり) ÷ (値上がり + 値下がり)。+1に近いほど全面高。",
+    )
+
+    if metrics.missing_inputs:
+        st.info(
+            "未取得の入力: " + " / ".join(metrics.missing_inputs)
+            + "。これらを必要とするレジームは判定していません（0とみなす補間はしません）。"
+        )
+
+
+def _render_regime_panel(metrics) -> None:
+    result = PressureRegimeClassifier().classify(metrics)
+    color = _REGIME_COLORS.get(result.primary, "#7f8c8d")
+    confidence = _CONFIDENCE_LABELS.get(result.confidence, result.confidence)
+
+    st.markdown(
+        f"""
+        <div style="border-left:6px solid {color};padding:0.6rem 1rem;
+                    background:rgba(127,127,127,0.08);border-radius:4px;">
+          <div style="font-size:1.35rem;font-weight:700;color:{color};">
+            {result.primary_label}
+            <span style="font-size:0.85rem;font-weight:500;color:#666;">
+              （{result.primary} ／ 確信度: {confidence}）
+            </span>
+          </div>
+          <div style="margin-top:0.35rem;font-size:0.95rem;">{result.description}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if result.reasons:
+        st.markdown("**判定の根拠**")
+        for reason in result.reasons:
+            st.markdown(f"- {reason}")
+
+    for caveat in result.caveats:
+        st.warning(caveat)
+
+    if result.also_matched:
+        labels = ", ".join(result.also_matched)
+        st.caption(f"同時に条件を満たしたレジーム: {labels}")
+
+    with st.expander("全レジームの条件充足状況を見る"):
+        for verdict in result.verdicts:
+            status = "成立" if verdict.matched else ("判定不能" if verdict.missing_inputs else "不成立")
+            st.markdown(f"**{verdict.label}（{verdict.regime}） — {status}**")
+            for item in verdict.satisfied:
+                st.markdown(f"- ✅ {item}")
+            for item in verdict.unsatisfied:
+                st.markdown(f"- ❌ {item}")
+            if verdict.missing_inputs:
+                st.markdown(f"- ⚠️ 入力不足: {' / '.join(verdict.missing_inputs)}")
+
+
+def _render_pressure_history_chart(
+    selected_date: str, market_trend_df: pd.DataFrame
+) -> None:
+    """過去20営業日の比率・空売り代金・市場売買代金を日付軸を揃えて並べる。
+
+    比率(%)と代金(兆円)は軸の意味が違うため、二軸で重ねずに段を分ける。
+    重ねると「比率が上がった＝売りが増えた」と誤読しやすい。
+    """
+    from plotly.subplots import make_subplots
+
+    st.markdown(f"##### 過去{_PRESSURE_HISTORY_DAYS}営業日の推移")
+
+    if market_trend_df is None or market_trend_df.empty:
+        st.info("推移を描くデータがありません。")
+        return
+
+    history = market_trend_df.sort_values("date")
+    history = history[history["date"] <= selected_date].tail(_PRESSURE_HISTORY_DAYS).copy()
+    if history.empty:
+        st.info("推移を描くデータがありません。")
+        return
+
+    history["空売り比率"] = history.apply(
+        lambda row: _safe_ratio_pct(row.get("total_short_va"), row.get("total_volume_va")),
+        axis=1,
+    )
+    history["規制あり比率"] = history.apply(
+        lambda row: _safe_ratio_pct(row.get("shrt_with_res_va"), row.get("total_volume_va")),
+        axis=1,
+    )
+    history["空売り代金"] = history["total_short_va"].map(to_trillion_yen)
+    history["市場売買代金"] = history["total_volume_va"].map(to_trillion_yen)
+
+    figure = make_subplots(
+        rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.06,
+        subplot_titles=("空売り比率・規制あり比率（%）", "空売り代金（兆円）", "市場売買代金（兆円）"),
+    )
+    figure.add_trace(
+        go.Scatter(x=history["date"], y=history["空売り比率"], name="空売り比率",
+                   mode="lines+markers", line=dict(color="#c0392b")),
+        row=1, col=1,
+    )
+    figure.add_trace(
+        go.Scatter(x=history["date"], y=history["規制あり比率"], name="規制あり比率",
+                   mode="lines+markers", line=dict(color="#e67e22", dash="dot")),
+        row=1, col=1,
+    )
+    figure.add_trace(
+        go.Bar(x=history["date"], y=history["空売り代金"], name="空売り代金",
+               marker_color="#8e44ad"),
+        row=2, col=1,
+    )
+    figure.add_trace(
+        go.Bar(x=history["date"], y=history["市場売買代金"], name="市場売買代金",
+               marker_color="#2980b9"),
+        row=3, col=1,
+    )
+    figure.update_yaxes(title_text="%", row=1, col=1)
+    figure.update_yaxes(title_text="兆円", row=2, col=1)
+    figure.update_yaxes(title_text="兆円", row=3, col=1)
+    figure.update_xaxes(title_text="日付", row=3, col=1)
+    figure.update_layout(
+        height=720, margin=dict(l=10, r=10, t=60, b=10),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    st.plotly_chart(figure, use_container_width=True)
+    st.caption(
+        "比率(%)と代金(兆円)は軸の意味が異なるため段を分けています。"
+        "比率の上昇が必ずしも空売り代金の増加を意味しない点にご注意ください。"
+    )
+
+
+def _safe_ratio_pct(numerator, denominator):
+    try:
+        numerator = float(numerator)
+        denominator = float(denominator)
+    except (TypeError, ValueError):
+        return None
+    if not denominator:
+        return None
+    return round(numerator / denominator * 100, 2)
+
+
+def _regime_ratio_dod_pt(metrics):
+    """空売り比率の前日比を pt で返す（比率の変化は pt で読むのが実務）。"""
+    change = metrics.total_ratio_change
+    if change.latest is None or change.dod_pct is None or change.dod_pct == -100:
+        return None
+    previous = change.latest / (1 + change.dod_pct / 100)
+    return round(change.latest - previous, 2)
+
+
+def _z_text(change) -> str:
+    if change.zscore is None:
+        return "—（サンプル不足）"
+    return f"{change.zscore:+.2f}（n={change.sample_size}）"
 
 
 def _render_overview(

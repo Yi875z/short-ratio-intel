@@ -26,7 +26,16 @@ from src.macro_context.theme_history import (
     build_theme_transition_prompt_block,
     find_previous_theme_date,
 )
+from src.analyzer.market_breadth import DEFAULT_BREADTH_SCOPE
+from src.analyzer.pressure_metrics import (
+    build_pressure_metrics,
+    format_pct,
+    format_signed_pct,
+    format_trillion_yen,
+)
+from src.analyzer.pressure_regime import PressureRegimeClassifier
 from src.storage.db import (
+    get_market_breadth_df,
     get_market_short_ratio_df,
     get_market_theme_snapshot_dates,
     get_market_theme_snapshots,
@@ -120,6 +129,16 @@ Markdownのコードブロック（```）は使わず、純粋なJSONのみを�
 - 異常値（Zスコア±2超・前日比±3pt超）には特別な注釈を付与する
 - 空売り比率の現代基準は、現在の設定値では{thresholds.market_normal_lower_pct:.0f}〜{thresholds.market_warning_pct:.0f}%を通常レンジ、{thresholds.market_warning_pct:.0f}%超を警戒ラインとして判断する
 - JPX空売り比率は「日次売買代金フロー」であり、「売り残高」ではない。残高と誤解される表現は禁止
+- **比率と絶対額を必ず分けて述べる。**「空売り比率が上がった」と「空売り代金が増えた」は別の事実である。
+  市場売買代金（分母）が縮めば、空売り代金が横ばいでも比率は上がる。
+  入力の【空売り代金と市場売買代金の変化】を見ずに、比率の上昇だけを根拠に売り圧力の強化と書かない
+- **入力の【需給レジーム（機械判定）】と矛盾する記述をしない。** 同じシステムが画面とレポートで
+  違う結論を出すことになるため。特に判定が `THIN_MARKET` の日に「空売り比率が高く売り圧力が強い」と
+  書くのは禁止。その日は商いの細りによる見かけの高比率として扱う
+- 機械判定の `confidence` が low、または「未取得の入力」がある場合は、その不確かさを本文に明示する。
+  未取得の入力を要する判断（例: 騰落銘柄数が未取得の日に「全面安」と断定する）は行わない
+- `supply_demand_regime_analysis` には、機械判定レジームの解釈を、比率・絶対額・流動性・価格反応の
+  4つに分けて書く。`regime`（リスクオン/リスクオフ/レンジ）とは別軸なので混同しない
 - 入力にない日経平均水準・確率・個別銘柄の断定は出力しない
 - 「必ず」「持続不可能」「反発確率○%」などの過剰確信表現を避け、条件付きで表現する
 - `investment_guardrails` には、売買推奨ではないこと、空売り比率単独で判断しないこと、反証条件を確認することを必ず入れる
@@ -197,6 +216,104 @@ Markdownのコードブロック（```）は使わず、純粋なJSONのみを�
 """
     logger.info(f"プロンプト規模: system={len(prompt):,}字")
     return prompt
+
+
+def build_pressure_regime_prompt_block(target_date: str) -> str:
+    """需給モニターの機械判定を、AIレポートへ渡すブロックとして組み立てる。
+
+    画面（需給モニタータブ）とレポート本文が食い違わないようにするのが目的。
+    機械判定が THIN_MARKET（商いが細って比率だけ高い）と言っている日に、
+    レポートが「空売り比率が高く売り圧力が強い」と書くと、同じシステムが
+    2つの結論を出すことになる。
+
+    絶対額の変化（前日比・5日平均比・Zスコア）と市場売買代金の推移も渡す。
+    従来のプロンプトは比率の水準しか渡しておらず、「分母が縮んだだけ」を
+    AIが判定する材料が無かった。
+
+    ⚠️ fail-soft。データが無い・計算できない場合も空文字を返さず、
+    「未接続」と明示したブロックを返す（AIが黙って推測で埋めないため）。
+    ⚠️ 業種別フロー特徴量（Phase 0）はここに含めない。まだ検証前であり、
+    未検証の指標をAIに解釈させると根拠のない断定を生む。
+    """
+    try:
+        market_df = get_market_short_ratio_df(to_date=target_date)
+        if market_df is None or market_df.empty:
+            return "【需給レジーム（機械判定）】:\n  データなし（空売り集計が未取得）"
+
+        breadth_row = None
+        breadth_df = get_market_breadth_df(
+            date=target_date, market_scope=DEFAULT_BREADTH_SCOPE
+        )
+        if breadth_df is not None and not breadth_df.empty:
+            breadth_row = breadth_df.iloc[0].to_dict()
+
+        metrics = build_pressure_metrics(target_date, market_df, breadth_row)
+        result = PressureRegimeClassifier().classify(metrics)
+
+        lines = [
+            "【需給レジーム（機械判定・この判定と矛盾する記述をしないこと）】:",
+            f"  判定: {result.primary}（{result.primary_label}） / 確信度: {result.confidence}",
+            f"  定義: {result.description}",
+        ]
+        for reason in result.reasons:
+            lines.append(f"  根拠: {reason}")
+        for caveat in result.caveats:
+            lines.append(f"  注意: {caveat}")
+        if result.also_matched:
+            lines.append(f"  同時成立: {', '.join(result.also_matched)}")
+        if result.missing_inputs:
+            lines.append(
+                f"  未取得の入力: {' / '.join(result.missing_inputs)}"
+                "（これを必要とするレジームは判定していない）"
+            )
+
+        values = metrics.values
+        short_change = metrics.short_value_change
+        volume_change = metrics.market_volume_change
+        lines += [
+            "",
+            "【空売り代金と市場売買代金の変化（比率とは別の情報）】:",
+            f"  総空売り代金: {format_trillion_yen(values.total_short_va)} / "
+            f"前日比 {format_signed_pct(short_change.dod_pct, 1)} / "
+            f"5日平均比 {format_signed_pct(short_change.vs_avg_pct, 1)} / "
+            f"Zスコア {_z_text(short_change)}",
+            f"  市場売買代金: {format_trillion_yen(values.market_volume_va)} / "
+            f"前日比 {format_signed_pct(volume_change.dod_pct, 1)} / "
+            f"5日平均比 {format_signed_pct(volume_change.vs_avg_pct, 1)} / "
+            f"Zスコア {_z_text(volume_change)}",
+            f"  空売り比率のZスコア: {_z_text(metrics.total_ratio_change)} / "
+            f"価格規制あり比率のZスコア: {_z_text(metrics.with_ratio_change)}",
+        ]
+
+        price = metrics.price
+        breadth = metrics.breadth
+        lines += [
+            "",
+            "【価格反応と市場の広がり】:",
+            f"  TOPIX当日騰落率: {format_signed_pct(price.topix_change_pct, 2)}"
+            if price.available else "  TOPIX当日騰落率: 未取得",
+        ]
+        if breadth.available:
+            lines.append(
+                f"  {breadth.scope_label}: 値上がり{breadth.advancing}銘柄 / "
+                f"値下がり{breadth.declining}銘柄 / "
+                f"ネットブレッドス {breadth.net_breadth:+.3f}"
+                "（空売り集計とは対象市場が異なるため、割り算せず並べて読むこと）"
+            )
+        else:
+            lines.append("  騰落銘柄数: 未取得")
+
+        return "\n".join(lines)
+
+    except Exception as exc:  # noqa: BLE001 レポート生成を止めない
+        logger.warning(f"需給レジームブロックの構築に失敗（レポートは継続）: {exc}")
+        return "【需給レジーム（機械判定）】:\n  取得失敗（判定なしとして扱うこと）"
+
+
+def _z_text(change) -> str:
+    if change is None or change.zscore is None:
+        return "N/A（サンプル不足）"
+    return f"{change.zscore:+.2f}"
 
 
 def _safe_sector_returns(target_date: str) -> dict:
@@ -336,6 +453,7 @@ def build_user_prompt(
     sq_week_case_block = _build_sq_week_case_block(target_date)
     institutional_flow_block = build_institutional_flow_prompt_block(target_date)
     live_market_block = build_market_quotes_prompt_block()
+    pressure_regime_block = build_pressure_regime_prompt_block(target_date)
 
     market_context = build_market_context_bundle(
         target_date=target_date,
@@ -383,6 +501,8 @@ def build_user_prompt(
 {f'【本日の追加ニュース】:{extra_news}' if extra_news else ''}
 
 【東証全体の空売り比率】: {today_summary.get('market_ratio', 'N/A')}%
+
+{pressure_regime_block}
 
 【JPX空売り内訳】:
 {breakdown_text}

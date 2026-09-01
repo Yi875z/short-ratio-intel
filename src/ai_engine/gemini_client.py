@@ -209,6 +209,10 @@ class GeminiReportGenerator:
             data = cls._loads_json_tolerant(text)
             # モデルが新設フィールドを落とした場合でも、レポート生成を止めない。
             data.setdefault(
+                "supply_demand_regime_analysis",
+                "需給レジームの専用分析は未生成です。",
+            )
+            data.setdefault(
                 "jpx_short_selling_breakdown_analysis",
                 "JPX公式内訳の専用分析は未生成です。東証全体サマリーを参照してください。",
             )
@@ -357,6 +361,9 @@ class GeminiReportGenerator:
             "",
             f"## 📈 東証全体サマリー",
             f"{report.market_overall_summary}",
+            "",
+            f"## ⚖️ 需給レジーム（比率・絶対額・流動性・価格反応）",
+            f"{report.supply_demand_regime_analysis}",
             "",
             f"## 🧭 JPX空売り内訳分析",
             f"{report.jpx_short_selling_breakdown_analysis}",

@@ -68,6 +68,18 @@ class ReadingReport(BaseModel):
         )
     )
 
+    supply_demand_regime_analysis: str = Field(
+        default="需給レジームの専用分析は未生成です。",
+        description=(
+            "入力の【需給レジーム（機械判定）】に対する解釈。機械判定と矛盾しないこと。"
+            "比率・絶対額（空売り代金）・市場流動性（売買代金）・価格反応の4つを分けて述べ、"
+            "特に『比率が高い』のか『空売り代金が実額で増えた』のかを区別する。"
+            "THIN_MARKET のときは商いの細りによる見かけの高比率であり売り圧力の強化と読まない。"
+            "未取得の入力があればそれを明記し、その入力を要する判断は行わない。"
+            "なお `regime`（リスクオン/リスクオフ/レンジ）とは別軸であり、混同しないこと"
+        ),
+    )
+
     jpx_short_selling_breakdown_analysis: str = Field(
         description="JPX公式内訳（価格規制あり/なし、規制なし構成比、実注文）の需給解釈"
     )

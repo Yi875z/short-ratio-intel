@@ -311,6 +311,19 @@ def test_業種ごとに独立して計算する():
     assert result["2026-08-01|3200"]["fwd_ret_1d"] == pytest.approx(-2.0)
 
 
+def test_NaNは欠損として扱い伝播させない():
+    """pandas 経由で読むと None は NaN になる。NaN を通すと計算結果まで NaN になり、
+    そのまま DB へ書き込まれて欠損が静かに汚染される（2026-09-01 の実障害）。
+    """
+    rows = _rows(1.0, 2.0, 3.0)
+    rows[1]["ret_cap_weighted"] = float("nan")
+
+    result = compute_forward_returns(rows, horizons=(1, 2))
+
+    assert result["2026-08-01|3650"]["fwd_ret_1d"] is None
+    assert result["2026-08-01|3650"]["fwd_ret_2d"] is None
+
+
 def test_日付順が崩れていても並べ替えて計算する():
     rows = list(reversed(_rows(1.0, 2.0, 3.0)))
     result = compute_forward_returns(rows, horizons=(1,))

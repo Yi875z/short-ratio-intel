@@ -493,6 +493,20 @@ _FORWARD_COLUMNS = (
     "fwd_excess_1d", "fwd_excess_3d", "fwd_excess_5d",
 )
 
+# 1トランザクションで流す更新行数の上限。Supabase の statement timeout 対策。
+_UPDATE_CHUNK_SIZE = 500
+
+
+def _is_finite(value) -> bool:
+    """None・NaN・inf を弾く。NaN を DB へ書くと欠損が静かに汚染される。"""
+    if value is None:
+        return False
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return False
+    return number == number and number not in (float("inf"), float("-inf"))
+
 
 def upsert_sector_flow_features(records: list[dict]) -> int:
     """業種別フロー特徴量をUPSERTする。
@@ -582,15 +596,19 @@ def update_sector_forward_returns(values_by_key: dict[str, dict]) -> int:
             payload = {
                 column: values[column]
                 for column in _FORWARD_COLUMNS
-                if values.get(column) is not None
+                if _is_finite(values.get(column))
             }
             if payload:
                 mappings.append({"id": row_id, **payload})
 
-        if mappings:
-            session.bulk_update_mappings(SectorFlowFeatureDaily, mappings)
+        # bulk_update_mappings は1行1UPDATEを発行する。全期間ぶんを1トランザクション
+        # で流すと Supabase の statement timeout に当たって丸ごと失敗する
+        # （2026-09-01 に 8,126行で実際に発生）。分割して確定させる。
+        for start in range(0, len(mappings), _UPDATE_CHUNK_SIZE):
+            chunk = mappings[start:start + _UPDATE_CHUNK_SIZE]
+            session.bulk_update_mappings(SectorFlowFeatureDaily, chunk)
             session.commit()
-            updated = len(mappings)
+            updated += len(chunk)
 
     logger.info(f"将来リターンを {updated}件更新しました")
     return updated

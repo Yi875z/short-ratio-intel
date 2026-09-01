@@ -362,9 +362,20 @@ def _weighted_mean(pairs: list[tuple[Optional[float], Optional[float]]]) -> Opti
 
 
 def _as_float(value) -> Optional[float]:
+    """数値へ変換する。NaN / inf は None として扱う。
+
+    ⚠️ NaN を通すと将来リターンの計算に伝播し、そのまま DB の float 列へ
+    書き込まれてしまう（Postgres は double precision に NaN を受け入れる）。
+    欠損は None で表現するという約束が静かに破れ、検証データが汚染される。
+    pandas 経由で読むと None は NaN になるため、この関門が必要。
+    """
     if value is None:
         return None
     try:
-        return float(value)
+        result = float(value)
     except (TypeError, ValueError):
         return None
+    # NaN は自分自身と等しくない。inf も判定に使えないので除く。
+    if result != result or result in (float("inf"), float("-inf")):
+        return None
+    return result

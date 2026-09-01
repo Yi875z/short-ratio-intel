@@ -47,7 +47,13 @@ from loguru import logger
 from config.settings import GEMINI_MODEL, SLACK_WEBHOOK_URL
 from src.ai_engine.gemini_client import GeminiReportGenerator
 from src.analyzer.anomaly_detector import AnomalyDetector
+from src.analyzer.market_breadth import (
+    compute_all_breadth,
+    compute_topix_change,
+    previous_business_day,
+)
 from src.analyzer.ratio_calculator import RatioCalculator
+from src.data_fetcher.jquants_api_client import JQuantsApiClient, JQuantsError
 from src.macro_context.context_builder import (
     build_market_context_bundle,
     build_theme_snapshot_dicts,
@@ -58,6 +64,7 @@ from src.storage.db import (
     save_ai_report,
     save_market_news_snapshots,
     save_market_theme_snapshots,
+    upsert_market_breadth_records,
 )
 
 # UI を含まない純粋な取得ロジックだけを Streamlit アプリから再利用（DRY）。
@@ -99,6 +106,77 @@ def _step_fetch(target_date: str | None, days: int) -> dict:
             "公開元の表記変更が疑われます。"
         )
     return result
+
+
+def _step_breadth(report_date: str) -> dict:
+    """騰落銘柄数・TOPIX騰落率を J-Quants から取得して保存する。
+
+    ⚠️ ここは **fail-soft**。空売り比率（_step_fetch）と違って、失敗しても
+    パイプラインを止めない。理由は3つ:
+      - 空売り比率はこのアプリの本体だが、騰落銘柄数は文脈情報である
+      - J-Quants は契約プランに依存する外部依存であり、ここで全体を落とすと
+        AIレポートまで巻き添えになる
+      - 需給モニターは欠損を「未取得」として明示し、それを必要とするレジームを
+        判定しない設計になっている（0で埋めた誤判定は起きない）
+
+    Returns:
+        {"saved": 保存件数, "error": エラー文字列 or None}
+    """
+    from datetime import datetime, timedelta
+
+    logger.info(f"[追加] 騰落銘柄数・TOPIX騰落率を取得: {report_date}")
+    try:
+        client = JQuantsApiClient()
+        if not client.is_configured:
+            logger.warning(
+                "JQUANTS_API_KEY が未設定のため騰落銘柄数はスキップします"
+                "（需給モニターでは『未取得』と表示されます）"
+            )
+            return {"saved": 0, "error": "APIキー未設定"}
+
+        # 前営業日は公式の取引カレンダーで決める（日付の引き算で1日ずれない）
+        start = (datetime.strptime(report_date, "%Y-%m-%d") - timedelta(days=14))
+        calendar_rows = client.get_trading_calendar(
+            start.strftime("%Y-%m-%d"), report_date
+        )
+        prev_date = previous_business_day(calendar_rows, report_date)
+        if not prev_date:
+            return {"saved": 0, "error": "前営業日を特定できません"}
+
+        bars_today = client.get_daily_bars(report_date)
+        bars_prev = client.get_daily_bars(prev_date)
+        master = client.get_listed_master(report_date)
+        breadth = compute_all_breadth(report_date, bars_today, bars_prev, master)
+
+        topix = compute_topix_change(
+            client.get_topix_bars(prev_date, report_date), report_date
+        )
+
+        records = []
+        for counts in breadth.values():
+            record = counts.to_dict()
+            if topix is not None:
+                record["topix_close"] = topix.close
+                record["topix_prev_close"] = topix.prev_close
+                record["topix_change_pct"] = topix.change_pct
+            records.append(record)
+
+        saved = upsert_market_breadth_records(records)
+        prime = breadth.get("TSE_PRIME")
+        if prime:
+            logger.info(
+                f"騰落銘柄数 保存 {saved}件 | プライム 値上がり{prime.advancing} "
+                f"値下がり{prime.declining} | TOPIX "
+                f"{topix.change_pct if topix else 'N/A'}%"
+            )
+        return {"saved": saved, "error": None}
+
+    except JQuantsError as exc:
+        logger.warning(f"騰落銘柄数の取得に失敗しました（処理は継続）: {exc}")
+        return {"saved": 0, "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001 文脈情報の失敗で本処理を落とさない
+        logger.warning(f"騰落銘柄数の処理で想定外のエラー（処理は継続）: {exc}")
+        return {"saved": 0, "error": str(exc)}
 
 
 def _prepare_analysis(report_date: str):
@@ -231,6 +309,9 @@ def run(args: argparse.Namespace) -> int:
     if not report_date:
         raise RuntimeError("DB に保存済みデータがなく、対象日を決定できません")
 
+    # 需給モニター用の文脈データ。失敗してもここで止めない（fail-soft）。
+    breadth_result = _step_breadth(report_date)
+
     theme_count = 0
     report_chars = 0
     report_obj = None
@@ -251,10 +332,15 @@ def run(args: argparse.Namespace) -> int:
             )
 
     highlights = _format_report_highlights(report_obj)
+    breadth_text = f"{breadth_result.get('saved')}件"
+    if breadth_result.get("error"):
+        breadth_text += f"（取得できず: {breadth_result['error']}）"
+
     summary = (
         f"✅ 空売り比率パイプライン完了 ({report_date})\n"
         f"・取得: sector={fetch_result.get('saved_sector')} / "
         f"market={fetch_result.get('saved_market')}\n"
+        f"・騰落銘柄数: {breadth_text}\n"
         f"・市場テーマ: {theme_count}件\n"
         f"・AIレポート: {report_chars}文字 ({used_model})\n"
         f"・DB: {backend}"

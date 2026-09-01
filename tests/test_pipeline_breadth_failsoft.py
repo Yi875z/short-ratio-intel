@@ -35,7 +35,8 @@ class _FakeClient:
         ]
 
     def get_listed_master(self, target_date=None):
-        return [{"Code": "1000", "Mkt": "0111"}]
+        # S33 は業種別フロー特徴量の母集団に必須（欠けると業種が1つも作られない）
+        return [{"Code": "1000", "Mkt": "0111", "S33": "3650"}]
 
     def get_topix_bars(self, from_date, to_date):
         return [
@@ -46,7 +47,13 @@ class _FakeClient:
 
 @pytest.fixture
 def saved_records(monkeypatch):
-    """DB書き込みを捕まえる。本番DBには触らない。"""
+    """DB書き込みを捕まえる。本番DBには触らない。
+
+    業種別フロー特徴量の保存・読み出しもここで差し替える。差し替え漏れがあると
+    テストが本番Supabaseへ接続してしまう（実際に一度ハングさせた）。
+    """
+    import pandas as pd
+
     captured = []
 
     def _fake_upsert(records):
@@ -54,6 +61,16 @@ def saved_records(monkeypatch):
         return len(records)
 
     monkeypatch.setattr(fetch_short_ratio, "upsert_market_breadth_records", _fake_upsert)
+    monkeypatch.setattr(
+        fetch_short_ratio, "upsert_sector_flow_features", lambda records: len(records)
+    )
+    monkeypatch.setattr(
+        fetch_short_ratio, "get_sector_flow_features_df",
+        lambda **kwargs: pd.DataFrame(),
+    )
+    monkeypatch.setattr(
+        fetch_short_ratio, "update_sector_forward_returns", lambda values: 0
+    )
     return captured
 
 
@@ -148,6 +165,60 @@ def test_前営業日が特定できなくても例外を投げない(monkeypatc
     assert result["saved"] == 0
     assert "前営業日" in result["error"]
     assert not saved_records
+
+
+# ------------------------------------------------------------------
+# 業種別フロー特徴量（Phase 0）
+# ------------------------------------------------------------------
+def test_騰落銘柄数と同じ日足から業種特徴量も保存する(monkeypatch, saved_records):
+    """API呼び出しを増やさず、取得済みの日足を使い回していることを確認する。"""
+    calls = []
+
+    class _CountingClient(_FakeClient):
+        def get_daily_bars(self, target_date):
+            calls.append(target_date)
+            return super().get_daily_bars(target_date)
+
+    _use_client(monkeypatch, _CountingClient())
+    result = fetch_short_ratio._step_breadth("2026-08-28")
+
+    assert result["features_saved"] > 0
+    # 日足の取得は当日と前日の2回だけ（特徴量のために追加取得していない）
+    assert calls == ["2026-08-28", "2026-08-27"]
+
+
+def test_業種特徴量の保存が失敗しても騰落銘柄数は保存済みのままにする(monkeypatch, saved_records):
+    """記録の失敗で、先に成功した保存を巻き戻さない。"""
+    _use_client(monkeypatch, _FakeClient())
+    monkeypatch.setattr(
+        fetch_short_ratio, "upsert_sector_flow_features",
+        lambda records: (_ for _ in ()).throw(RuntimeError("db down")),
+    )
+
+    result = fetch_short_ratio._step_breadth("2026-08-28")
+
+    assert result["saved"] > 0          # 騰落銘柄数は保存できている
+    assert result["features_saved"] == 0
+    assert result["error"] is None      # ステップ全体は失敗扱いにしない
+    assert saved_records
+
+
+def test_将来リターンの更新は直近窓に限定する(monkeypatch, saved_records):
+    """テーブル全体を毎日読み直すと、行数の増加に比例して遅くなる。"""
+    import pandas as pd
+
+    seen = {}
+
+    def _fake_get(**kwargs):
+        seen.update(kwargs)
+        return pd.DataFrame()
+
+    _use_client(monkeypatch, _FakeClient())
+    monkeypatch.setattr(fetch_short_ratio, "get_sector_flow_features_df", _fake_get)
+    fetch_short_ratio._step_breadth("2026-08-28")
+
+    assert seen.get("to_date") == "2026-08-28"
+    assert seen.get("from_date") < "2026-08-28"   # 全期間ではなく窓で読んでいる
 
 
 # ------------------------------------------------------------------

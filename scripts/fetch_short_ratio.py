@@ -53,6 +53,10 @@ from src.analyzer.market_breadth import (
     previous_business_day,
 )
 from src.analyzer.ratio_calculator import RatioCalculator
+from src.analyzer.sector_flow_features import (
+    compute_forward_returns,
+    compute_sector_features,
+)
 from src.data_fetcher.jquants_api_client import JQuantsApiClient, JQuantsError
 from src.macro_context.context_builder import (
     build_market_context_bundle,
@@ -62,9 +66,12 @@ from src.storage.db import (
     get_latest_date,
     get_market_short_ratio_df,
     save_ai_report,
+    get_sector_flow_features_df,
     save_market_news_snapshots,
     save_market_theme_snapshots,
+    update_sector_forward_returns,
     upsert_market_breadth_records,
+    upsert_sector_flow_features,
 )
 
 # UI を含まない純粋な取得ロジックだけを Streamlit アプリから再利用（DRY）。
@@ -75,6 +82,10 @@ from app.streamlit_app import (
 )
 
 DEFAULT_DAYS = 5
+
+# 将来リターンを埋め直す直近窓（カレンダー日）。最長ホライズンの5営業日を
+# 連休込みで十分にカバーし、かつテーブルの成長に引きずられない長さにする。
+_FORWARD_WINDOW_DAYS = 45
 
 
 # ──────────────────────────────────────────────────────────────
@@ -169,14 +180,69 @@ def _step_breadth(report_date: str) -> dict:
                 f"値下がり{prime.declining} | TOPIX "
                 f"{topix.change_pct if topix else 'N/A'}%"
             )
-        return {"saved": saved, "error": None}
+
+        # 業種別フロー特徴量（Phase 0）。上で取得済みの日足をそのまま使うため
+        # API呼び出しは増えない。ここが失敗しても騰落銘柄数の保存は取り消さない。
+        features_saved = _save_sector_features(
+            report_date, bars_today, bars_prev, master,
+            topix.change_pct if topix else None,
+        )
+
+        return {"saved": saved, "features_saved": features_saved, "error": None}
 
     except JQuantsError as exc:
         logger.warning(f"騰落銘柄数の取得に失敗しました（処理は継続）: {exc}")
-        return {"saved": 0, "error": str(exc)}
+        return {"saved": 0, "features_saved": 0, "error": str(exc)}
     except Exception as exc:  # noqa: BLE001 文脈情報の失敗で本処理を落とさない
         logger.warning(f"騰落銘柄数の処理で想定外のエラー（処理は継続）: {exc}")
-        return {"saved": 0, "error": str(exc)}
+        return {"saved": 0, "features_saved": 0, "error": str(exc)}
+
+
+def _save_sector_features(
+    report_date: str,
+    bars_today: list,
+    bars_prev: list,
+    master: list,
+    topix_change_pct,
+) -> int:
+    """業種別フロー特徴量を算出して保存する（Phase 0: 判定はしない）。
+
+    ⚠️ ここも fail-soft。特徴量は「後から検証するための記録」であって、
+    当日の判断に必須のものではない。失敗しても騰落銘柄数の保存は生きたままにする。
+
+    将来リターンは直近の窓だけ計算し直して更新する。日が進むと、それまで
+    「先の営業日が足りず None」だった行が埋まるようになるため。
+    全期間を毎日読み直すとテーブルの成長に比例して遅くなるので、
+    最長ホライズン(5営業日)を十分にカバーする直近窓に限定する。
+    全期間の再計算が必要なときは
+    `python -m scripts.backfill_sector_flow_features --forward-only` を使う。
+    保存側が fwd_* を上書きしない作りなので、取り直しで消えることはない。
+    """
+    from datetime import datetime, timedelta
+
+    try:
+        features = compute_sector_features(
+            report_date, bars_today, bars_prev, master,
+            topix_change_pct=topix_change_pct,
+        )
+        saved = upsert_sector_flow_features([f.to_dict() for f in features])
+
+        window_start = (
+            datetime.strptime(report_date, "%Y-%m-%d") - timedelta(days=_FORWARD_WINDOW_DAYS)
+        ).strftime("%Y-%m-%d")
+        stored = get_sector_flow_features_df(from_date=window_start, to_date=report_date)
+        if not stored.empty:
+            values = compute_forward_returns(
+                stored[["date", "s33_code", "ret_cap_weighted", "excess_ret_vs_topix"]]
+                .to_dict("records")
+            )
+            update_sector_forward_returns(values)
+
+        logger.info(f"業種別フロー特徴量 保存 {saved}件")
+        return saved
+    except Exception as exc:  # noqa: BLE001 記録の失敗で本処理を落とさない
+        logger.warning(f"業種別フロー特徴量の保存に失敗（処理は継続）: {exc}")
+        return 0
 
 
 def _prepare_analysis(report_date: str):
@@ -335,6 +401,7 @@ def run(args: argparse.Namespace) -> int:
     breadth_text = f"{breadth_result.get('saved')}件"
     if breadth_result.get("error"):
         breadth_text += f"（取得できず: {breadth_result['error']}）"
+    breadth_text += f" / 業種特徴量 {breadth_result.get('features_saved', 0)}件"
 
     summary = (
         f"✅ 空売り比率パイプライン完了 ({report_date})\n"

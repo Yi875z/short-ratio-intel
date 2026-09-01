@@ -25,6 +25,7 @@ from src.storage.models import (
     MarketNewsSnapshot,
     MarketShortRatioDaily,
     MarketThemeSnapshot,
+    SectorFlowFeatureDaily,
     ShortRatioDaily,
     UsMarketDaily,
     UsShortInterest,
@@ -469,6 +470,184 @@ def get_market_breadth_latest_date(market_scope: Optional[str] = None) -> Option
     """保存済み騰落銘柄数の最新日付を返す。"""
     dates = get_saved_market_breadth_dates(market_scope)
     return dates[0] if dates else None
+
+
+# ------------------------------------------------------------------
+# 業種別フロー特徴量（Phase 0: 保存のみ・判定なし）
+#
+# 空売り集計とは母集団が違うため別テーブル。join して並べるのは可、
+# 割り算して比率を作るのは不可（scope 列がその境界）。
+# ------------------------------------------------------------------
+
+_FEATURE_COLUMNS = (
+    "constituents", "compared",
+    "ret_cap_weighted", "ret_equal_weighted", "excess_ret_vs_topix",
+    "above_vwap_pct", "high_close_pct", "advancing_pct",
+    "close_above_open_pct", "close_location_median",
+    "turnover_total", "top_n", "top_n_turnover_share",
+    "top_n_above_vwap", "top_n_high_close", "top_n_advancing",
+)
+
+_FORWARD_COLUMNS = (
+    "fwd_ret_1d", "fwd_ret_3d", "fwd_ret_5d",
+    "fwd_excess_1d", "fwd_excess_3d", "fwd_excess_5d",
+)
+
+
+def upsert_sector_flow_features(records: list[dict]) -> int:
+    """業種別フロー特徴量をUPSERTする。
+
+    レコードは sector_flow_features.SectorFlowFeatures.to_dict() 形式。
+    欠損は None のまま保存する（補間しない）。
+    同一 (date, s33_code) の再投入で行数は増えない（冪等）。
+
+    ⚠️ 将来リターン列はここでは上書きしない。特徴量の取り直しで、
+       別パスが埋めた将来リターンを消してしまわないため。
+       将来リターンの更新は update_sector_forward_returns() が担当する。
+    """
+    if not records:
+        return 0
+
+    now = datetime.utcnow()
+    rows: list[dict] = []
+    for r in records:
+        date_value = r.get("date")
+        s33_code = r.get("s33_code")
+        if not date_value or not s33_code:
+            logger.warning(f"業種別フロー特徴量の必須項目が欠落: {r}")
+            continue
+
+        row = {
+            "date": date_value,
+            "s33_code": s33_code,
+            "scope": r.get("scope") or "",
+            "source": r.get("source") or "JQUANTS_V2",
+            "ingested_at": now,
+        }
+        for column in _FEATURE_COLUMNS:
+            row[column] = r.get(column)
+
+        codes = r.get("top_n_codes")
+        row["top_n_codes"] = json.dumps(list(codes), ensure_ascii=False) if codes else None
+        rows.append(row)
+
+    if not rows:
+        return 0
+
+    engine = get_db_engine()
+    with Session(engine) as session:
+        saved = _apply_bulk_upsert(
+            session, SectorFlowFeatureDaily, rows, ("date", "s33_code")
+        )
+        session.commit()
+
+    logger.info(f"業種別フロー特徴量 {saved}件を保存しました")
+    return saved
+
+
+def update_sector_forward_returns(values_by_key: dict[str, dict]) -> int:
+    """将来リターン列だけを更新する。
+
+    Args:
+        values_by_key: {"YYYY-MM-DD|S33": {"fwd_ret_1d": ..., ...}}
+                       値が None のものは「まだ確定していない」として書き込まない
+                       （既に入っている値を None で潰さないため）。
+    """
+    if not values_by_key:
+        return 0
+
+    engine = get_db_engine()
+    updated = 0
+
+    with Session(engine) as session:
+        keys = [tuple(key.split("|", 1)) for key in values_by_key]
+        dates = {date for date, _ in keys}
+        existing = {
+            (row[1], row[2]): row[0]
+            for row in session.execute(
+                select(
+                    SectorFlowFeatureDaily.id,
+                    SectorFlowFeatureDaily.date,
+                    SectorFlowFeatureDaily.s33_code,
+                ).where(SectorFlowFeatureDaily.date.in_(dates))
+            ).all()
+        }
+
+        mappings: list[dict] = []
+        for key, values in values_by_key.items():
+            date_value, s33_code = key.split("|", 1)
+            row_id = existing.get((date_value, s33_code))
+            if row_id is None:
+                continue
+            payload = {
+                column: values[column]
+                for column in _FORWARD_COLUMNS
+                if values.get(column) is not None
+            }
+            if payload:
+                mappings.append({"id": row_id, **payload})
+
+        if mappings:
+            session.bulk_update_mappings(SectorFlowFeatureDaily, mappings)
+            session.commit()
+            updated = len(mappings)
+
+    logger.info(f"将来リターンを {updated}件更新しました")
+    return updated
+
+
+def get_sector_flow_features_df(
+    date: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    s33_code: Optional[str] = None,
+) -> pd.DataFrame:
+    """条件指定で業種別フロー特徴量を DataFrame で返す。"""
+    engine = get_db_engine()
+
+    with Session(engine) as session:
+        stmt = select(SectorFlowFeatureDaily).order_by(
+            SectorFlowFeatureDaily.date, SectorFlowFeatureDaily.s33_code
+        )
+        if date:
+            stmt = stmt.where(SectorFlowFeatureDaily.date == date)
+        if from_date:
+            stmt = stmt.where(SectorFlowFeatureDaily.date >= from_date)
+        if to_date:
+            stmt = stmt.where(SectorFlowFeatureDaily.date <= to_date)
+        if s33_code:
+            stmt = stmt.where(SectorFlowFeatureDaily.s33_code == s33_code)
+
+        rows = session.execute(stmt).scalars().all()
+
+    if not rows:
+        return pd.DataFrame()
+
+    records = []
+    for r in rows:
+        record = {
+            "date": r.date,
+            "s33_code": r.s33_code,
+            "scope": r.scope,
+            "top_n_codes": json.loads(r.top_n_codes) if r.top_n_codes else [],
+        }
+        for column in _FEATURE_COLUMNS + _FORWARD_COLUMNS:
+            record[column] = getattr(r, column)
+        records.append(record)
+
+    return pd.DataFrame(records)
+
+
+def get_saved_sector_feature_dates() -> list[str]:
+    """保存済み業種別フロー特徴量の日付一覧を新しい順で返す。"""
+    engine = get_db_engine()
+    with Session(engine) as session:
+        rows = session.execute(
+            select(SectorFlowFeatureDaily.date)
+            .distinct()
+            .order_by(desc(SectorFlowFeatureDaily.date))
+        ).scalars().all()
+    return list(rows)
 
 
 # ------------------------------------------------------------------

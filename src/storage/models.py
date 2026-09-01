@@ -120,6 +120,75 @@ class MarketBreadthDaily(Base):
         )
 
 
+class SectorFlowFeatureDaily(Base):
+    """業種別フロー特徴量 日次データ（Phase 0: 保存のみ・判定なし）
+
+    「大量の空売りフローが出た業種で、市場はその売りをどう処理したのか」を
+    後から検証できるようにするための特徴量と、その将来リターンを同じ行に持つ。
+
+    ⚠️ この行は**状態分類を持たない**。既存システムは既に1日63件の判定を出しているが、
+       そのどれも翌日の値動きと突き合わせて検証されていない。判定を増やす前に、
+       特徴量と将来リターンを並べて測れる状態を作るのがこのテーブルの目的。
+    ⚠️ 母集団が空売り集計と違う。あちらは東証全体（外国株券等を含む）、
+       こちらは scope 列のとおり普通株の主要3市場。**両者を掛け合わせない**
+       （join して並べるのは可、割り算は不可）。
+    ⚠️ 将来リターンは検証専用。当日の判定に使うと未来の情報を使うことになる。
+    """
+
+    __tablename__ = "sector_flow_features_daily"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    date = Column(String(10), nullable=False, index=True)       # YYYY-MM-DD
+    s33_code = Column(String(10), nullable=False, index=True)   # 33業種コード
+    scope = Column(String(40), nullable=False, default="")      # 母集団の定義
+
+    # 母集団（欠損を補間していないことを監査できるよう両方持つ）
+    constituents = Column(Integer, nullable=True)
+    compared = Column(Integer, nullable=True)
+
+    # 値動き
+    ret_cap_weighted = Column(Float, nullable=True)      # 前日時価総額加重の騰落率(%)
+    ret_equal_weighted = Column(Float, nullable=True)    # 単純平均の騰落率(%)
+    excess_ret_vs_topix = Column(Float, nullable=True)   # 対TOPIX相対(pt)
+
+    # 市場がその売りをどう処理したか
+    above_vwap_pct = Column(Float, nullable=True)        # 終値>当日VWAP の銘柄比率(%)
+    high_close_pct = Column(Float, nullable=True)        # 終値位置>=0.75 の比率(%)
+    advancing_pct = Column(Float, nullable=True)         # 前日比プラスの比率(%)
+    close_above_open_pct = Column(Float, nullable=True)  # 終値>始値の比率(%)
+    close_location_median = Column(Float, nullable=True)
+
+    # 売買代金と上位バスケット
+    turnover_total = Column(Float, nullable=True)        # 円
+    top_n = Column(Integer, nullable=True)
+    top_n_turnover_share = Column(Float, nullable=True)  # (%)
+    top_n_above_vwap = Column(Integer, nullable=True)
+    top_n_high_close = Column(Integer, nullable=True)
+    top_n_advancing = Column(Integer, nullable=True)
+    top_n_codes = Column(String, nullable=True)          # 監査用のJSON配列
+
+    # 将来リターン（別パスで後から埋める。判定には使わない）
+    fwd_ret_1d = Column(Float, nullable=True)
+    fwd_ret_3d = Column(Float, nullable=True)
+    fwd_ret_5d = Column(Float, nullable=True)
+    fwd_excess_1d = Column(Float, nullable=True)
+    fwd_excess_3d = Column(Float, nullable=True)
+    fwd_excess_5d = Column(Float, nullable=True)
+
+    source = Column(String(32), nullable=False, default="JQUANTS_V2")
+    ingested_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("date", "s33_code", name="uq_sector_feature_date_s33"),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<SectorFlowFeatureDaily date={self.date} s33={self.s33_code} "
+            f"ret={self.ret_cap_weighted} vwap%={self.above_vwap_pct}>"
+        )
+
+
 class AiReport(Base):
     """AIが生成した日次レポート"""
 

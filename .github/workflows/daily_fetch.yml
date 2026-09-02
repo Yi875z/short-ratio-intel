@@ -1,15 +1,19 @@
 name: 空売り比率 定時取得・AIレポート生成
 
 # トリガー:
-#   1. 平日(月〜金) 19:00 JST = 10:00 UTC の自動実行
-#      （空売り比率は日次公表。営業日夕方に直近営業日分をまとめて取得する）
-#   2. Actions タブからの手動実行（workflow_dispatch / スマホからも可）
+#   1. Cloudflare Workers Cron（Worker 名 `jpx-report-scheduler`）からの workflow_dispatch。
+#      平日 19:07 JST に起動される。空売り比率は日次公表なので、営業日夕方に
+#      直近営業日分をまとめて取得する。
+#      Worker のソースは別リポジトリにある: C:\CarSol\JPX_Analysis_System\scheduler#      （wrangler.toml の `crons` と src/index.js の `JOBS` のキーを一致させて時刻を変える）
+#   2. Actions タブからの手動実行（同じ workflow_dispatch / スマホからも可）
+#
+# なぜ schedule: が無いのか（2026-09-02 削除。安易に戻さないこと）:
+#   GitHub の schedule イベントは実測で 30分〜10時間 遅延した（本リポジトリでも
+#   2026-08-28 は 19:07 JST 起動のはずが翌 06:09 JST に到着）。定刻起動は
+#   Cloudflare Cron が担うため、同時刻の schedule は「大幅に遅れて届く二重実行」に
+#   しかならず、Gemini 無料枠（20 req/日・モデル単位）を2倍消費していた。
+#   workflow_dispatch: は Worker の入口なので絶対に消さないこと。
 on:
-  schedule:
-    # 19:07 JST 平日（UTC 10:07）。時刻帯は従来どおり19時台のまま、分だけずらす。
-    # 「毎時00分」はGitHubのスケジュールが最も混雑するスロットで後回しにされやすい
-    # （実測で83〜138分の遅延あり）。:00/:15/:30/:45 を避けると遅延が減る。
-    - cron: '7 10 * * 1-5'
   workflow_dispatch:
     inputs:
       date:

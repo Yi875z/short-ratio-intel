@@ -4,7 +4,7 @@
 > 本ファイルへの参照のみを記載し、ルール本文を複製しないこと。
 > 新しいAIエージェントを導入する場合も、そのエージェントの規約ファイルから本ファイルを参照させるだけでよい。
 
-- 最終更新: 2026-08-31（需給モニターを追加。J-Quants API v2 を導入し騰落銘柄数・TOPIXを自前算出。テスト基準を362件へ更新）
+- 最終更新: 2026-09-03（JPX内訳の欠測を0として保存・表示しない修正。概要タブに分析日を表示。テスト基準を448件へ更新）
 - 対象プロジェクト: short-ratio-intel（JPX空売り比率の取得・分析・Gemini AIレポート生成 Streamlit アプリ）
 - 公開区分: L3（コードは一般公開。ナレッジ原本・Secrets・個人データはリポジトリ外で非公開管理）
 
@@ -75,7 +75,7 @@
 - **技術スタック**: Python 3.12（Streamlit Community Cloud 固定。新しすぎる Python は固定依存の wheel が無くビルド失敗する）/
   pandas 2.2.0 / SQLAlchemy 2.0.27 / psycopg2-binary / pydantic 2.6.0 / loguru / feedparser / Streamlit / Gemini API / pytest
 - **起動コマンド**: `streamlit run app/streamlit_app.py`（本番は Streamlit Community Cloud・bcrypt ログイン付き。main へ push すると自動再デプロイ）
-- **テストコマンド**: `pytest`（基準: 全362件パス。2026-08-31 実測 21秒。需給モニター一式のテストを追加）
+- **テストコマンド**: `pytest`（基準: 全448件パス。2026-09-03 実測 20秒。内訳欠測の回帰テスト一式を追加）
 - **DBスキーマの正**: `src/storage/db.py` の `get_engine()` が `DATABASE_URL` ありで Supabase(PostgreSQL)、無しでローカル SQLite に切替。
   スキーマ定義の正本ファイルは未確認（`src/storage/` 配下を参照）
 - **データソースと取得条件**:
@@ -83,7 +83,13 @@
     （`jquants_client.py` — **名前に反し J-Quants API は使わない**・認証鍵不要）がフォールバック。
     取得元の業種名・日付・列見出しの表記は予告なく変わる（2026-08 に3点同時に変わり3営業日欠測）ため、
     HTMLの契約と復旧手順は `docs/data_sources/short_ratio_karauri.md` を正とする。
-    **取得0件はパイプラインを非ゼロ終了させる**（無通知の欠測を防ぐため、fail-soft にしない）
+    **取得0件はパイプラインを非ゼロ終了させる**（無通知の欠測を防ぐため、fail-soft にしない）。
+    **JPXは直近2営業日ぶんしかPDFをリンクせず、URLはページ固有ハッシュ配下（`.../t13vrt...-att/260902-m.pdf`）で
+    推測できない**（2026-09-03 実測）。一覧から落ちた日の内訳には二度と到達できないため、
+    内訳の欠測は当日中に気づく必要がある（`pipeline_health.check_breakdown_gaps`）。
+    スクレイパー側は内訳を持たず0を返す。**0で既存の内訳を上書きしないこと**
+    （2026-09-01 に 7/28〜7/31・8/26〜8/31 の内訳を実際に失った）。
+    比率は再計算せず保存済みの `short_ratio_pct` を正とする
   - RSSニュース（feedparser・ロイター/日経/Bloomberg/Google News）
   - 業種別株価指数の騰落率: nikkei225jp.com の履歴JS（`src/macro_context/sector_price.py`）。
     値に業種名が付かず**並び順のみが同定手段**のため、仕様は `docs/data_sources/sector_price_index.md` を正とする

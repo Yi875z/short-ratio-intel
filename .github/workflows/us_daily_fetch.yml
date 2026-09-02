@@ -1,19 +1,22 @@
 name: 米国ショートフロー 日次取得
 
 # トリガー:
-#   1. 平日(月〜金) 朝 08:37 JST の自動実行
-#      FINRA の当日ファイルは米東部18:00頃に公開される。JSTでは夏時間で翌朝07:00、
-#      冬時間で08:00。冬時間でも間に合うよう08:30台に置いている。
-#   2. Actions タブからの手動実行（workflow_dispatch / スマホからも可）
+#   1. Cloudflare Workers Cron（Worker 名 `jpx-report-scheduler`）からの workflow_dispatch。
+#      平日朝 08:37 JST に起動される。FINRA の当日ファイルは米東部18:00頃に公開され、
+#      JST では夏時間で翌朝07:00・冬時間で08:00。冬時間でも間に合い、かつ東証の寄り
+#      (09:00)前に読めるよう08:30台に置いている。
+#      Worker のソースは別リポジトリにある: C:\CarSol\JPX_Analysis_System\scheduler#      （時刻を変えるのは src/index.js の SCHEDULE。JST 表記で書く）
+#   2. Actions タブからの手動実行（同じ workflow_dispatch / スマホからも可）
 #
 # ⚠️ 日本側の daily_fetch.yml（19:07 JST・Gemini AIレポート）とは独立している。
 #    こちらは Gemini を呼ばず、ルールベースでレポートを作る。
+#
+# なぜ schedule: が無いのか（2026-09-03 削除。安易に戻さないこと）:
+#   GitHub の schedule イベントは実測 84分〜10時間 遅延する。08:37 に出す意味は
+#   東証の寄り前に読めることなので、遅れるとレポートの価値そのものが落ちる。
+#   定刻起動は Cloudflare Cron が担うため schedule: は不要。
+#   workflow_dispatch: は Worker の入口なので絶対に消さないこと。
 on:
-  schedule:
-    # 08:37 JST 平日 = 23:37 UTC 日〜木。
-    # UTC日曜23:37 → JST月曜08:37 なので、曜日指定は 0-4（日〜木）になる。
-    # 「毎時00分」はGitHubのスケジュールが混雑して遅延しやすいため分をずらしている。
-    - cron: '37 23 * * 0-4'
   workflow_dispatch:
     inputs:
       date:

@@ -4,7 +4,7 @@ name: 空売り比率 定時取得・AIレポート生成
 #   1. Cloudflare Workers Cron（Worker 名 `jpx-report-scheduler`）からの workflow_dispatch。
 #      平日 19:07 JST に起動される。空売り比率は日次公表なので、営業日夕方に
 #      直近営業日分をまとめて取得する。
-#      Worker のソースは別リポジトリにある: C:\CarSol\JPX_Analysis_System\scheduler#      （wrangler.toml の `crons` と src/index.js の `JOBS` のキーを一致させて時刻を変える）
+#      Worker のソースは別リポジトリにある: C:\CarSol\JPX_Analysis_System\scheduler#      （時刻を変えるのは src/index.js の SCHEDULE。JST 表記で書く）
 #   2. Actions タブからの手動実行（同じ workflow_dispatch / スマホからも可）
 #
 # なぜ schedule: が無いのか（2026-09-02 削除。安易に戻さないこと）:

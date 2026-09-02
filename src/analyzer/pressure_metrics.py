@@ -190,13 +190,20 @@ def build_pressure_metrics(
     today = history.iloc[-1]
 
     values = _build_values(today)
-    ratios = _build_ratios(values)
-    if ratios.total_short_pct is None:
+    ratios = _build_ratios(values, _as_float(today.get("short_ratio_pct")))
+    # 分母の合計売買代金が無い日。保存済みの比率だけは採用できるため
+    # ratios.total_short_pct は埋まるが、代金を必要とする判定は落とす必要がある。
+    if not values.market_volume_va:
         missing.append("売買代金")
+    if values.total_short_va is None:
+        # 比率は分かるが内訳・絶対額が無い日。判定側がそれを前提に落とせるよう印を残す。
+        missing.append("JPX内訳（空売り代金）")
 
-    short_series = _series(history, "total_short_va")
+    short_series = _series(history, "total_short_va", breakdown_only=True)
     volume_series = _series(history, "total_volume_va")
-    ratio_series = _ratio_series(history, "total_short_va")
+    # 空売り比率は保存済みの short_ratio_pct を正とする。内訳が欠けている日でも
+    # 取得元から比率だけは得られており、内訳から再計算すると 0% になってしまう。
+    ratio_series = _series(history, "short_ratio_pct")
     with_ratio_series = _ratio_series(history, "shrt_with_res_va")
 
     metrics = PressureMetrics(
@@ -221,22 +228,47 @@ def build_pressure_metrics(
 
 
 def _build_values(row) -> ValueBlock:
+    """絶対額を取り出す。
+
+    ⚠️ 内訳（実注文・規制あり・なし）が欠けている日は 0 ではなく None にする。
+    stock-marketdata のスクレイパーは比率と売買代金しか持たず内訳を 0 で返すため、
+    0 のまま扱うと「空売り代金が0円だった」という誤った事実になり、
+    比率も 0% と表示され、レジーム判定まで誤る。
+    """
+    breakdown_missing = not _has_breakdown(row)
     return ValueBlock(
-        total_short_va=_as_float(row.get("total_short_va")),
-        with_restriction_va=_as_float(row.get("shrt_with_res_va")),
-        without_restriction_va=_as_float(row.get("shrt_no_res_va")),
-        actual_order_va=_as_float(row.get("sell_ex_short_va")),
+        total_short_va=None if breakdown_missing else _as_float(row.get("total_short_va")),
+        with_restriction_va=None if breakdown_missing else _as_float(row.get("shrt_with_res_va")),
+        without_restriction_va=None if breakdown_missing else _as_float(row.get("shrt_no_res_va")),
+        actual_order_va=None if breakdown_missing else _as_float(row.get("sell_ex_short_va")),
         market_volume_va=_as_float(row.get("total_volume_va")),
     )
 
 
-def _build_ratios(values: ValueBlock) -> RatioBlock:
-    """比率は必ず同一日の合計売買代金(d)を分母にする（JPXの公式定義と同じ）。"""
+def _has_breakdown(row) -> bool:
+    """JPX内訳が実際に入っているか（すべて0なら未取得とみなす）。"""
+    return any(
+        _as_float(row.get(column))
+        for column in ("total_short_va", "shrt_with_res_va", "shrt_no_res_va")
+    )
+
+
+def _build_ratios(values: ValueBlock, stored_ratio_pct: Optional[float] = None) -> RatioBlock:
+    """比率は必ず同一日の合計売買代金(d)を分母にする（JPXの公式定義と同じ）。
+
+    内訳が欠けている日でも、空売り比率そのものは取得元から得られている。
+    その場合は保存済みの short_ratio_pct を使い、内訳由来の比率だけ None にする。
+    「内訳が無い」と「空売りが無かった」は別の事実である。
+    """
     denominator = values.market_volume_va
     if not denominator:
-        return RatioBlock()
+        return RatioBlock(total_short_pct=stored_ratio_pct)
 
     total_short = values.total_short_va
+    if total_short is None:
+        # 内訳なし。比率は取得元の値をそのまま採用し、内訳の比率は出さない。
+        return RatioBlock(total_short_pct=stored_ratio_pct)
+
     return RatioBlock(
         total_short_pct=_pct(total_short, denominator),
         with_restriction_pct=_pct(values.with_restriction_va, denominator),
@@ -352,22 +384,38 @@ def format_signed_pct(value: Optional[float], digits: int = 1) -> str:
 
 
 # ----------------------------------------------------------------------
-def _series(history: pd.DataFrame, column: str) -> list[Optional[float]]:
+def _series(history: pd.DataFrame, column: str, breakdown_only: bool = False) -> list[Optional[float]]:
+    """列の時系列。
+
+    breakdown_only=True の列は、その行の内訳が欠けていれば None にする。
+    0 のまま平均やZスコアに入れると「空売りが激減した日」に見えてしまう。
+    """
     if column not in history.columns:
         return []
-    return [_as_float(v) for v in history[column].tolist()]
+    values = []
+    for _, row in history.iterrows():
+        if breakdown_only and not _has_breakdown(row):
+            values.append(None)
+        else:
+            values.append(_as_float(row.get(column)))
+    return values
 
 
 def _ratio_series(history: pd.DataFrame, numerator_column: str) -> list[Optional[float]]:
-    """比率の時系列。分母は必ず同じ行の合計売買代金にする。"""
+    """比率の時系列。分母は必ず同じ行の合計売買代金にする。
+
+    内訳が欠けている行は None（0%ではない）。
+    """
     if numerator_column not in history.columns or "total_volume_va" not in history.columns:
         return []
-    return [
-        _pct(_as_float(numerator), _as_float(denominator))
-        for numerator, denominator in zip(
-            history[numerator_column], history["total_volume_va"]
-        )
-    ]
+    values = []
+    for _, row in history.iterrows():
+        if not _has_breakdown(row):
+            values.append(None)
+            continue
+        values.append(_pct(_as_float(row.get(numerator_column)),
+                           _as_float(row.get("total_volume_va"))))
+    return values
 
 
 def _replace_missing(metrics: PressureMetrics, missing: tuple[str, ...]) -> PressureMetrics:

@@ -1210,16 +1210,29 @@ def _render_pressure_history_chart(
         st.info("推移を描くデータがありません。")
         return
 
-    history["空売り比率"] = history.apply(
-        lambda row: _safe_ratio_pct(row.get("total_short_va"), row.get("total_volume_va")),
+    # ⚠️ JPX内訳が取れなかった日を 0 として描かないこと。
+    # stock-marketdata へフォールバックした日は内訳が 0 で保存されており、
+    # そのまま描くと「空売り比率0%・空売り代金0円」という嘘のグラフになる
+    # （2026-09-01 に実際に発生）。内訳の無い日は欠測として線と棒を途切れさせる。
+    has_breakdown = history.apply(
+        lambda row: bool(
+            (row.get("total_short_va") or 0)
+            or (row.get("shrt_with_res_va") or 0)
+            or (row.get("shrt_no_res_va") or 0)
+        ),
         axis=1,
     )
+
+    # 空売り比率は取得元から常に得られるため、内訳の有無にかかわらず描ける。
+    history["空売り比率"] = history["short_ratio_pct"]
     history["規制あり比率"] = history.apply(
         lambda row: _safe_ratio_pct(row.get("shrt_with_res_va"), row.get("total_volume_va")),
         axis=1,
-    )
-    history["空売り代金"] = history["total_short_va"].map(to_trillion_yen)
+    ).where(has_breakdown)
+    history["空売り代金"] = history["total_short_va"].map(to_trillion_yen).where(has_breakdown)
     history["市場売買代金"] = history["total_volume_va"].map(to_trillion_yen)
+
+    missing_days = int((~has_breakdown).sum())
 
     figure = make_subplots(
         rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.06,
@@ -1258,6 +1271,13 @@ def _render_pressure_history_chart(
         "比率(%)と代金(兆円)は軸の意味が異なるため段を分けています。"
         "比率の上昇が必ずしも空売り代金の増加を意味しない点にご注意ください。"
     )
+    if missing_days:
+        st.warning(
+            f"表示期間のうち {missing_days}営業日は JPX公式PDF の内訳が未取得です"
+            "（規制あり比率と空売り代金が途切れています）。"
+            "空売り比率と市場売買代金は取得できています。"
+            "左メニューの「指定日を取得」で該当日を取り直すと内訳が埋まります。"
+        )
 
 
 def _safe_ratio_pct(numerator, denominator):

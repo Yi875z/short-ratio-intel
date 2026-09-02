@@ -30,10 +30,12 @@ def test_比率の前日比はptで返す():
     history = pd.DataFrame([
         {"date": "2026-08-27", "total_short_va": 4_000_000.0,
          "total_volume_va": 10_000_000.0, "shrt_with_res_va": 3_000_000.0,
-         "shrt_no_res_va": 1_000_000.0, "sell_ex_short_va": 6_000_000.0},
+         "shrt_no_res_va": 1_000_000.0, "sell_ex_short_va": 6_000_000.0,
+         "short_ratio_pct": 40.0},
         {"date": "2026-08-28", "total_short_va": 3_700_000.0,
          "total_volume_va": 10_000_000.0, "shrt_with_res_va": 2_800_000.0,
-         "shrt_no_res_va": 900_000.0, "sell_ex_short_va": 6_300_000.0},
+         "shrt_no_res_va": 900_000.0, "sell_ex_short_va": 6_300_000.0,
+         "short_ratio_pct": 37.0},
     ])
     metrics = build_pressure_metrics("2026-08-28", history)
 

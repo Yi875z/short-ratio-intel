@@ -44,6 +44,8 @@ def _day(date, total_volume, total_short, with_res=None, no_res=None, actual=Non
         "shrt_no_res_va": no_res,
         "total_short_va": total_short,
         "total_volume_va": total_volume,
+        # 実データでは取得元から必ず入る列。内訳が欠けた日でもこれだけは残る。
+        "short_ratio_pct": round(total_short / total_volume * 100, 2) if total_volume else 0,
     }
 
 
@@ -74,12 +76,19 @@ def test_規制なし構成比は総空売りを分母にする():
     assert metrics.ratios.without_share_pct != metrics.ratios.without_restriction_pct
 
 
-def test_売買代金がゼロなら比率は算出せずNoneにする():
-    """スクレイパー由来の0埋めデータでゼロ除算せず、判定不能として扱う。"""
+def test_売買代金がゼロなら内訳由来の比率は算出しない():
+    """ゼロ除算で garbage を作らない。
+
+    ただし空売り比率そのものは取得元から得られているため、
+    保存済みの short_ratio_pct をそのまま採用する。
+    「内訳が計算できない」と「空売りが無かった」は別の事実。
+    """
     row = dict(REAL_DAY, total_volume_va=0.0)
     metrics = build_pressure_metrics("2026-08-28", _history([row]))
 
-    assert metrics.ratios.total_short_pct is None
+    assert metrics.ratios.total_short_pct == pytest.approx(43.47)   # 取得元の値
+    assert metrics.ratios.with_restriction_pct is None              # 内訳由来は出さない
+    assert metrics.ratios.without_restriction_pct is None
     assert "売買代金" in metrics.missing_inputs
 
 
@@ -185,8 +194,11 @@ def test_比率の時系列も同じ行の分母で作る():
     ]
     metrics = build_pressure_metrics("2026-08-28", _history(rows))
 
+    # 空売り比率そのものは保存済みの値を使う（内訳が欠けた日でも途切れないため）
     assert metrics.total_ratio_change.latest == pytest.approx(40.0)
     assert metrics.total_ratio_change.dod_pct == pytest.approx(-20.0)  # 50% → 40%
+    # 内訳由来の比率も、必ず同じ行の分母で作る（32% → 32%）
+    assert metrics.with_ratio_change.latest == pytest.approx(32.0)
 
 
 # ------------------------------------------------------------------

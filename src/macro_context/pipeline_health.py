@@ -128,6 +128,46 @@ def check_data_freshness(
     return issues
 
 
+def check_breakdown_gaps(
+    rows: list[dict],
+    recent_days: int = 10,
+) -> list[HealthIssue]:
+    """空売り比率はあるのに JPX内訳が入っていない日を検出する。
+
+    ⚠️ これは当日中に気づかないと**永久に取り返せない**。
+    JPX の空売り集計ページは直近ぶんしかPDFをリンクしておらず（2026-09-01 時点で1日のみ）、
+    URLの `-att/` 配下はページ固有のハッシュで推測できない。
+    一覧から落ちた過去日のPDFには到達できず、内訳は失われる。
+
+    実際に 2026-04〜08 の22営業日ぶんの内訳が復旧不能になった。
+
+    Args:
+        rows: {"date", "short_ratio_pct", "total_short_va"} を持つ行（日付昇順でなくてよい）
+    """
+    recent = sorted(
+        (r for r in rows if r.get("date")),
+        key=lambda r: r["date"],
+        reverse=True,
+    )[:recent_days]
+
+    missing = [
+        r["date"] for r in recent
+        if (r.get("short_ratio_pct") or 0) > 0 and not (r.get("total_short_va") or 0)
+    ]
+    if not missing:
+        return []
+
+    return [HealthIssue(
+        severity="high",
+        area="JPX内訳",
+        message=(
+            f"直近{len(recent)}営業日のうち {len(missing)}日で内訳が未取得です"
+            f"（{' / '.join(sorted(missing)[-3:])}）"
+        ),
+        action="当日中に『指定日を取得』で取り直す（JPXは過去分のPDFを公開し続けない）",
+    )]
+
+
 def check_validation_staleness(
     last_run_iso: Optional[str],
     today: Optional[date] = None,
@@ -175,6 +215,7 @@ def collect_health_issues(today: Optional[date] = None) -> list[HealthIssue]:
         from src.storage.db import (
             get_latest_date,
             get_market_breadth_latest_date,
+            get_market_short_ratio_df,
             get_saved_sector_feature_dates,
         )
 
@@ -184,6 +225,10 @@ def collect_health_issues(today: Optional[date] = None) -> list[HealthIssue]:
             "騰落銘柄数": get_market_breadth_latest_date(),
             "業種別フロー特徴量": feature_dates[0] if feature_dates else None,
         }, today))
+
+        market_df = get_market_short_ratio_df()
+        if not market_df.empty:
+            issues.extend(check_breakdown_gaps(market_df.to_dict("records")))
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"鮮度点検に失敗（処理は継続）: {exc}")
 

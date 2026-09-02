@@ -11,6 +11,7 @@ import pytest
 
 from src.macro_context.pipeline_health import (
     HealthIssue,
+    check_breakdown_gaps,
     check_calendar_coverage,
     check_data_freshness,
     check_validation_staleness,
@@ -84,6 +85,46 @@ def test_新しいデータは鳴らさない():
     assert check_data_freshness(
         {"空売り比率": "2026-08-31"}, today=date(2026, 9, 1)
     ) == []
+
+
+# ------------------------------------------------------------------
+# JPX内訳の欠落（当日中に気づかないと永久に失われる）
+# ------------------------------------------------------------------
+def _market_row(date, ratio, total_short):
+    return {"date": date, "short_ratio_pct": ratio, "total_short_va": total_short}
+
+
+def test_内訳が欠けた日を検出する():
+    """比率はあるのに内訳が0の日は、スクレイパーへ落ちた日。"""
+    rows = [
+        _market_row("2026-08-25", 43.05, 3_320_455),
+        _market_row("2026-08-26", 42.70, 0),
+        _market_row("2026-08-27", 45.00, 0),
+    ]
+    issues = check_breakdown_gaps(rows)
+
+    assert len(issues) == 1
+    assert issues[0].severity == "high"
+    assert "2日で内訳が未取得" in issues[0].message
+    assert "当日中" in issues[0].action
+
+
+def test_内訳が揃っていれば鳴らさない():
+    rows = [_market_row(f"2026-08-{i:02d}", 43.0, 3_000_000) for i in range(20, 28)]
+    assert check_breakdown_gaps(rows) == []
+
+
+def test_古い欠落は直近窓の外なので鳴らさない():
+    """取り返しがつかない過去分で鳴り続けても行動できない。"""
+    rows = [_market_row("2026-04-20", 43.0, 0)]
+    rows += [_market_row(f"2026-08-{i:02d}", 43.0, 3_000_000) for i in range(18, 29)]
+    assert check_breakdown_gaps(rows, recent_days=5) == []
+
+
+def test_比率も無い日は内訳欠落として数えない():
+    """そもそも取得できていない日は鮮度チェックの担当。"""
+    rows = [_market_row("2026-08-26", 0, 0)]
+    assert check_breakdown_gaps(rows) == []
 
 
 # ------------------------------------------------------------------

@@ -1,0 +1,209 @@
+"""
+JPX内訳の欠損とデータ破壊に対する回帰テスト。
+
+2026-09-01 に実際に起きた事故の再発防止:
+  1. JPX一覧ページの取得が一度失敗すると空辞書がキャッシュされ、
+     そのインスタンスは以後すべての日付でPDFを見つけられなくなった。
+  2. その結果すべての日が stock-marketdata へフォールバックした。
+     スクレイパーは内訳を持たず 0 を返す。
+  3. upsert が無条件に上書きしたため、取得済みの正しい内訳が 0 に潰された。
+  4. 画面は内訳から比率を再計算していたため「空売り比率 0%」と表示された。
+"""
+import pandas as pd
+import pytest
+import requests
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
+
+from src.analyzer.pressure_metrics import build_pressure_metrics
+from src.data_fetcher.jpx_pdf_client import JPXShortSellingClient
+from src.storage import db
+from src.storage.models import Base, MarketShortRatioDaily
+
+
+@pytest.fixture
+def temp_db(tmp_path, monkeypatch):
+    engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}")
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr(db, "_engine", engine)
+    return engine
+
+
+def _jpx_record(date="2026-08-28"):
+    """JPX公式PDF由来（内訳あり）。"""
+    return {
+        "Date": date,
+        "SellExShortVa": 5_140_754.0,
+        "ShrtWithResVa": 3_201_367.0,
+        "ShrtNoResVa": 751_240.0,
+        "TotalShortVa": 3_952_607.0,
+        "TotalVolumeVa": 9_093_361.0,
+        "ShortRatioPct": 43.47,
+        "DodChange": None,
+    }
+
+
+def _scraper_record(date="2026-08-28"):
+    """stock-marketdata 由来（比率と売買代金のみ・内訳は0）。"""
+    return {
+        "Date": date,
+        "SellExShortVa": 0,
+        "ShrtWithResVa": 0,
+        "ShrtNoResVa": 0,
+        "TotalShortVa": 0,
+        "TotalVolumeVa": 9_093_361.0,
+        "ShortRatioPct": 43.50,
+        "DodChange": 0.5,
+    }
+
+
+# ------------------------------------------------------------------
+# 1. 一覧ページの失敗をキャッシュしない
+# ------------------------------------------------------------------
+def test_一覧ページの取得失敗をキャッシュしない(monkeypatch):
+    """一度の通信失敗で、以後ずっとPDFを諦めてしまわないこと。"""
+    calls = {"n": 0}
+
+    def _fail(*args, **kwargs):
+        calls["n"] += 1
+        raise requests.ConnectionError("transient")
+
+    monkeypatch.setattr(requests, "get", _fail)
+    client = JPXShortSellingClient()
+
+    assert client._get_pdf_url_map() == {}
+    assert client._get_pdf_url_map() == {}
+    assert calls["n"] == 2, "失敗を覚え込んで再試行しなくなっている"
+
+
+def test_成功した一覧ページはキャッシュする(monkeypatch):
+    """毎回取りに行くと無駄なので、成功時はキャッシュする。"""
+    calls = {"n": 0}
+
+    class _Resp:
+        status_code = 200
+        text = '<a href="/x/260828-m.pdf">m</a>'
+
+        def raise_for_status(self):
+            return None
+
+    def _ok(*args, **kwargs):
+        calls["n"] += 1
+        return _Resp()
+
+    monkeypatch.setattr(requests, "get", _ok)
+    client = JPXShortSellingClient()
+
+    first = client._get_pdf_url_map()
+    client._get_pdf_url_map()
+    assert first
+    assert calls["n"] == 1
+
+
+# ------------------------------------------------------------------
+# 2. 内訳を0で潰さない
+# ------------------------------------------------------------------
+def test_内訳なしの取得で既存の内訳を潰さない(temp_db):
+    """これが今回の事故の本体。"""
+    db.upsert_market_short_ratio_records([_jpx_record()])
+    db.upsert_market_short_ratio_records([_scraper_record()])
+
+    with Session(temp_db) as session:
+        row = session.query(MarketShortRatioDaily).one()
+
+    # 内訳は守られる
+    assert row.total_short_va == pytest.approx(3_952_607.0)
+    assert row.shrt_with_res_va == pytest.approx(3_201_367.0)
+    assert row.sell_ex_short_va == pytest.approx(5_140_754.0)
+    # 比率と売買代金は新しい取得結果で更新される
+    assert row.short_ratio_pct == pytest.approx(43.50)
+    assert row.dod_change == pytest.approx(0.5)
+
+
+def test_内訳ありの取得は上書きする(temp_db):
+    """正しい内訳同士なら、新しいほうで更新されること。"""
+    db.upsert_market_short_ratio_records([_scraper_record()])
+    db.upsert_market_short_ratio_records([_jpx_record()])
+
+    with Session(temp_db) as session:
+        row = session.query(MarketShortRatioDaily).one()
+    assert row.total_short_va == pytest.approx(3_952_607.0)
+
+
+def test_内訳なし同士なら0のまま保存する(temp_db):
+    db.upsert_market_short_ratio_records([_scraper_record()])
+    with Session(temp_db) as session:
+        row = session.query(MarketShortRatioDaily).one()
+    assert row.total_short_va == 0
+    assert row.short_ratio_pct == pytest.approx(43.50)
+
+
+# ------------------------------------------------------------------
+# 3. 内訳なしを0%として表示・判定しない
+# ------------------------------------------------------------------
+def _history(rows):
+    return pd.DataFrame(rows)
+
+
+def _row(date, ratio, volume, short=None):
+    """short=None なら内訳なし（スクレイパー由来）。"""
+    if short is None:
+        return {
+            "date": date, "short_ratio_pct": ratio, "total_volume_va": volume,
+            "total_short_va": 0, "shrt_with_res_va": 0, "shrt_no_res_va": 0,
+            "sell_ex_short_va": 0,
+        }
+    return {
+        "date": date, "short_ratio_pct": ratio, "total_volume_va": volume,
+        "total_short_va": short, "shrt_with_res_va": short * 0.8,
+        "shrt_no_res_va": short * 0.2, "sell_ex_short_va": volume - short,
+    }
+
+
+def test_内訳なしの日でも空売り比率は取得元の値を使う():
+    """内訳から再計算すると 0% になる。取得元の比率を正とする。"""
+    metrics = build_pressure_metrics(
+        "2026-08-28", _history([_row("2026-08-28", 43.50, 9_093_361.0)])
+    )
+
+    assert metrics.ratios.total_short_pct == pytest.approx(43.50)
+    assert metrics.ratios.with_restriction_pct is None
+    assert metrics.ratios.without_restriction_pct is None
+    assert metrics.values.total_short_va is None
+    assert "JPX内訳（空売り代金）" in metrics.missing_inputs
+
+
+def test_内訳ありの日は従来どおり内訳から比率を出す():
+    metrics = build_pressure_metrics(
+        "2026-08-28", _history([_row("2026-08-28", 43.47, 10_000_000.0, 4_000_000.0)])
+    )
+    assert metrics.ratios.total_short_pct == pytest.approx(40.0)
+    assert metrics.ratios.with_restriction_pct == pytest.approx(32.0)
+    assert metrics.values.total_short_va == pytest.approx(4_000_000.0)
+    assert "JPX内訳（空売り代金）" not in metrics.missing_inputs
+
+
+def test_内訳なしの日を空売り代金の平均やZスコアに混ぜない():
+    """0 を平均に入れると「空売りが激減した日」に見えてしまう。"""
+    rows = [_row(f"2026-08-{i:02d}", 40.0, 10_000_000.0, 4_000_000.0) for i in range(1, 8)]
+    rows.append(_row("2026-08-08", 43.5, 10_000_000.0))   # 内訳なし
+    rows.append(_row("2026-08-09", 40.0, 10_000_000.0, 4_100_000.0))
+
+    metrics = build_pressure_metrics("2026-08-09", _history(rows))
+
+    # 直前日(内訳なし)を飛ばして、その前の内訳ありと比較する
+    assert metrics.short_value_change.dod_pct == pytest.approx(2.5)
+    assert metrics.short_value_change.vs_avg_pct == pytest.approx(2.5)
+
+
+def test_空売り比率の時系列は内訳なしの日も繋がる():
+    rows = [
+        _row("2026-08-26", 42.70, 7_378_717.0),          # 内訳なし
+        _row("2026-08-27", 45.00, 8_711_234.0),          # 内訳なし
+        _row("2026-09-01", 41.85, 8_436_078.0, 3_530_576.0),
+    ]
+    metrics = build_pressure_metrics("2026-09-01", _history(rows))
+
+    assert metrics.total_ratio_change.latest == pytest.approx(41.85)
+    # 45.00 → 41.85 の変化として繋がる（0%を挟まない）
+    assert metrics.total_ratio_change.dod_pct == pytest.approx(-7.0, abs=0.1)

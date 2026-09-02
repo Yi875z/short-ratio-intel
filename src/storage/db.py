@@ -250,12 +250,23 @@ def upsert_market_short_ratio_records(records: list[dict]) -> int:
                 existing.short_ratio_pct = r["ShortRatioPct"]
                 if r.get("DodChange") is not None:
                     existing.dod_change = r.get("DodChange")
-                existing.sell_ex_short_va = r.get("SellExShortVa", 0)
-                existing.shrt_with_res_va = shrt_with_res_va
-                existing.shrt_no_res_va = shrt_no_res_va
-                existing.total_short_va = total_short_va
                 existing.total_volume_va = r.get("TotalVolumeVa", 0)
                 existing.calculated_at = datetime.utcnow()
+
+                # ⚠️ 内訳を持たないレコードで、既に入っている内訳を0で潰さないこと。
+                # stock-marketdata のスクレイパーは比率と売買代金しか持たず内訳を0で返す。
+                # JPX公式PDFが一時的に取れなかっただけの日に上書きすると、
+                # 取得済みの正しい内訳が永久に失われる
+                # （2026-09-01 に 7/31・8/26〜8/31 の5営業日ぶんを実際に破壊した）。
+                if total_short_va or shrt_with_res_va or shrt_no_res_va:
+                    existing.sell_ex_short_va = r.get("SellExShortVa", 0)
+                    existing.shrt_with_res_va = shrt_with_res_va
+                    existing.shrt_no_res_va = shrt_no_res_va
+                    existing.total_short_va = total_short_va
+                elif existing.total_short_va:
+                    logger.info(
+                        f"{date_value}: 内訳なしの取得結果のため、既存のJPX内訳を保持します"
+                    )
             else:
                 session.add(MarketShortRatioDaily(
                     date=date_value,

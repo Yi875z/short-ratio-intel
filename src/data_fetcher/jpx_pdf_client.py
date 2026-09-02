@@ -209,9 +209,14 @@ class JPXShortSellingClient:
             resp = requests.get(_INDEX_URL, headers=_HEADERS, timeout=30)
             resp.raise_for_status()
         except requests.RequestException as e:
-            logger.warning(f"JPX空売り集計ページの取得に失敗しました: {e}")
-            self._pdf_url_cache = {}
-            return self._pdf_url_cache
+            # ⚠️ ここで空の辞書をキャッシュしてはいけない。
+            # 一度の通信失敗を覚え込むと、そのインスタンスは以後すべての日付で
+            # PDFを見つけられず、全日が stock-marketdata へフォールバックする。
+            # スクレイパーは内訳を持たない（0を返す）ため、既存の正しい内訳が
+            # 0で上書きされてデータが失われる（2026-09-01 に5営業日ぶん破壊された）。
+            # キャッシュせずに返し、次の呼び出しで取得し直させる。
+            logger.warning(f"JPX空売り集計ページの取得に失敗しました（次回再試行）: {e}")
+            return {}
 
         soup = BeautifulSoup(resp.text, "html.parser")
         pdf_map: dict[tuple[str, str], str] = {}

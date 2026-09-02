@@ -1312,6 +1312,14 @@ def _render_overview(
     market_trend_df: pd.DataFrame,
     anomalies: list,
 ) -> None:
+    # どの営業日の数字を見ているかを画面上で明示する。
+    # サイドバーの「分析日」だけだと、タブを切り替えた後に見落としやすい。
+    st.markdown(f"##### 分析日: {_ja_date_label(selected_date)}")
+    st.caption(
+        f"この画面の指標・チャートはすべて {selected_date}（JPXの集計対象日）が基準です。"
+        "左メニューの「分析日」で切り替えられます。"
+    )
+
     market_ratio = today_summary.get("market_ratio")
     market_dod = today_summary.get("market_dod_change")
     cols = st.columns(4)
@@ -2303,6 +2311,18 @@ def _show_fetch_availability(result: dict) -> None:
         f"sector_source={result.get('sector_source')} / "
         f"market_source={result.get('market_source')}"
     )
+
+
+_WEEKDAY_JA = ("月", "火", "水", "木", "金", "土", "日")
+
+
+def _ja_date_label(iso_date) -> str:
+    """ISO日付を「2026年9月2日（水）」にする。読めない値は原文のまま返す。"""
+    try:
+        d = date.fromisoformat(str(iso_date))
+    except (TypeError, ValueError):
+        return str(iso_date)
+    return f"{d.year}年{d.month}月{d.day}日（{_WEEKDAY_JA[d.weekday()]}）"
 
 
 def _pct(value) -> str:

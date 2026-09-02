@@ -8,7 +8,12 @@ from dataclasses import fields
 
 import pandas as pd
 
-from app.streamlit_app import _COLUMN_LABELS, _SECTOR_TABLE_ORDER, _ja_frame
+from app.streamlit_app import (
+    _COLUMN_LABELS,
+    _SECTOR_TABLE_ORDER,
+    _ja_date_label,
+    _ja_frame,
+)
 from src.analyzer.anomaly_detector import AnomalyEvent
 from src.analyzer.flow_signal_analyzer import FlowSignal
 
@@ -88,3 +93,25 @@ def test_labels_are_japanese():
     ]
 
     assert ascii_only == []
+
+
+# ------------------------------------------------------------------
+# 分析日の表示
+#
+# 概要タブの数値がどの営業日のものか、画面だけで分かるようにする。
+# ------------------------------------------------------------------
+def test_分析日は和暦表記に曜日を添える():
+    assert _ja_date_label("2026-09-02") == "2026年9月2日（水）"
+    assert _ja_date_label("2026-08-31") == "2026年8月31日（月）"
+
+
+def test_分析日は月日のゼロ埋めをしない():
+    """「2026年09月02日」は読みにくい。人が読む表記に寄せる。"""
+    assert _ja_date_label("2026-01-05") == "2026年1月5日（月）"
+
+
+def test_読めない日付は原文のまま返す():
+    """画面を落とすより、渡された値をそのまま見せて気づかせる。"""
+    assert _ja_date_label("") == ""
+    assert _ja_date_label(None) == "None"
+    assert _ja_date_label("2026/09/02") == "2026/09/02"

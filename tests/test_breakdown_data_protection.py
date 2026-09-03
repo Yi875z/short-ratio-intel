@@ -9,6 +9,8 @@ JPX内訳の欠損とデータ破壊に対する回帰テスト。
   3. upsert が無条件に上書きしたため、取得済みの正しい内訳が 0 に潰された。
   4. 画面は内訳から比率を再計算していたため「空売り比率 0%」と表示された。
 """
+from datetime import date
+
 import pandas as pd
 import pytest
 import requests
@@ -207,6 +209,89 @@ def test_空売り比率の時系列は内訳なしの日も繋がる():
     assert metrics.total_ratio_change.latest == pytest.approx(41.85)
     # 45.00 → 41.85 の変化として繋がる（0%を挟まない）
     assert metrics.total_ratio_change.dod_pct == pytest.approx(-7.0, abs=0.1)
+
+
+# ------------------------------------------------------------------
+# 5. 月別アーカイブから過去日を取り直せる
+#
+# 一覧ページは直近2営業日ぶんしか載せない。それだけを見て「復旧不能」と
+# 判断すると、実際には取れるデータを永久に諦めることになる（2026-09-03 に
+# 実際にその誤判断をした）。欠測は必ずアーカイブまで見に行くこと。
+# ------------------------------------------------------------------
+_INDEX_HTML = """
+<a href="/markets/statistics-equities/short-selling/t13aaa-att/260902-m.pdf">9/2</a>
+<a href="/markets/statistics-equities/short-selling/t13aaa-att/260902-g.pdf">9/2</a>
+"""
+
+_ARCHIVE_AUG_HTML = """
+<a href="/markets/statistics-equities/short-selling/t13bbb-att/260828-m.pdf">8/28</a>
+<a href="/markets/statistics-equities/short-selling/t13bbb-att/260828-g.pdf">8/28</a>
+<a href="/markets/statistics-equities/short-selling/t13ccc-att/260831-m.pdf">8/31</a>
+"""
+
+
+class _Resp:
+    def __init__(self, text):
+        self.text = text
+        self.status_code = 200
+
+    def raise_for_status(self):
+        return None
+
+
+def _routed_get(monkeypatch, archive_html=_ARCHIVE_AUG_HTML, on_archive=None):
+    """一覧＝9/2のみ、アーカイブ01＝8月、他は404相当にした requests.get を仕込む。"""
+    def _get(url, **kwargs):
+        if url.endswith("/short-selling/"):
+            return _Resp(_INDEX_HTML)
+        if "00-archives-01.html" in url:
+            if on_archive:
+                on_archive(url)
+            return _Resp(archive_html)
+        raise requests.HTTPError(f"404 {url}")
+
+    monkeypatch.setattr(requests, "get", _get)
+
+
+def test_一覧に無い過去日はアーカイブから引く(monkeypatch):
+    _routed_get(monkeypatch)
+    client = JPXShortSellingClient()
+
+    url = client._find_pdf_url("2026-08-28", "m")
+
+    assert url and url.endswith("260828-m.pdf")
+
+
+def test_一覧にある日はアーカイブを読みに行かない(monkeypatch):
+    """毎日の取得でアーカイブまで叩くのは無駄。当日は一覧で完結すること。"""
+    touched = []
+    _routed_get(monkeypatch, on_archive=touched.append)
+    client = JPXShortSellingClient()
+
+    assert client._find_pdf_url("2026-09-02", "m").endswith("260902-m.pdf")
+    assert touched == []
+
+
+def test_同じ月を二度読みに行かない(monkeypatch):
+    touched = []
+    _routed_get(monkeypatch, on_archive=touched.append)
+    client = JPXShortSellingClient()
+
+    client._find_pdf_url("2026-08-28", "m")
+    client._find_pdf_url("2026-08-31", "m")
+
+    assert len(touched) == 1, "同じアーカイブページを何度も取りに行っている"
+
+
+def test_アーカイブの採番は今月からの差で決まる():
+    """01が前月。当月は一覧側にあるのでアーカイブには無い。"""
+    today = date(2026, 9, 3)
+
+    assert JPXShortSellingClient._archive_page_number("2026-08", today) == 1
+    assert JPXShortSellingClient._archive_page_number("2026-07", today) == 2
+    assert JPXShortSellingClient._archive_page_number("2025-09", today) == 12
+    assert JPXShortSellingClient._archive_page_number("2026-09", today) is None   # 当月
+    assert JPXShortSellingClient._archive_page_number("2025-08", today) is None   # 13ヶ月前
 
 
 # ------------------------------------------------------------------

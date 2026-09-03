@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import re
 import zlib
-from datetime import datetime
+from datetime import date, datetime
 from urllib.parse import urljoin
 
 import requests
@@ -18,6 +18,16 @@ _DATE_KEY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 _INDEX_URL = "https://www.jpx.co.jp/markets/statistics-equities/short-selling/"
 _HOST = "https://www.jpx.co.jp"
+
+# 一覧ページには直近2営業日ぶんしかPDFが載らない（2026-09-03 実測）。
+# それより前の日は月別アーカイブページに移る。12ヶ月ぶんが保持されており、
+# 01 が前月、12 が13ヶ月前に対応する（同日実測: 01=2026-08 … 12=2025-09）。
+# 13以降は404。欠測に気づいたら、まずここを見に行くこと。
+_ARCHIVE_URL = (
+    "https://www.jpx.co.jp/markets/statistics-equities/short-selling/"
+    "00-archives-{number:02d}.html"
+)
+_ARCHIVE_PAGE_MAX = 12
 
 _HEADERS = {
     "User-Agent": (
@@ -70,6 +80,10 @@ class JPXShortSellingClient:
 
     def __init__(self) -> None:
         self._pdf_url_cache: dict[tuple[str, str], str] | None = None
+        # アーカイブは月単位で読み込み、読んだ月を覚えて無駄打ちを避ける。
+        self._archive_url_cache: dict[tuple[str, str], str] = {}
+        self._archive_months_loaded: set[str] = set()
+        self._archive_scanned_all = False
 
     def get_market_breakdown_by_date(self, target_date: str) -> dict | None:
         """指定日の東証全体PDF（*-m.pdf）から内訳を取得する。"""
@@ -196,10 +210,22 @@ class JPXShortSellingClient:
         return resp.content
 
     def _find_pdf_url(self, target_date: str, kind: str) -> str | None:
-        """一覧ページから日付・種別に対応するPDF URLを引く。"""
+        """日付・種別に対応するPDF URLを引く。
+
+        一覧ページ（直近2営業日）に無ければ月別アーカイブを見に行く。
+        欠測日を「もう取れない」と諦めないための経路であり、
+        過去データの取り直しはここに依存している。
+        """
         yymmdd = datetime.strptime(target_date, "%Y-%m-%d").strftime("%y%m%d")
         filename = f"{yymmdd}-{kind}.pdf"
-        return self._get_pdf_url_map().get((target_date, kind)) or self._get_pdf_url_map().get((filename, kind))
+
+        index_map = self._get_pdf_url_map()
+        url = index_map.get((target_date, kind)) or index_map.get((filename, kind))
+        if url:
+            return url
+
+        archive_map = self._get_archive_url_map(target_date)
+        return archive_map.get((target_date, kind)) or archive_map.get((filename, kind))
 
     def _get_pdf_url_map(self) -> dict[tuple[str, str], str]:
         if self._pdf_url_cache is not None:
@@ -218,7 +244,69 @@ class JPXShortSellingClient:
             logger.warning(f"JPX空売り集計ページの取得に失敗しました（次回再試行）: {e}")
             return {}
 
-        soup = BeautifulSoup(resp.text, "html.parser")
+        self._pdf_url_cache = self._parse_pdf_links(resp.text)
+        return self._pdf_url_cache
+
+    # ------------------------------------------------------------------
+    # 月別アーカイブ
+    # ------------------------------------------------------------------
+    def _get_archive_url_map(self, target_date: str) -> dict[tuple[str, str], str]:
+        """対象日の属する月のアーカイブを読み込み、累積したURL表を返す。"""
+        month = target_date[:7]
+        if self._archive_scanned_all or month in self._archive_months_loaded:
+            return self._archive_url_cache
+
+        number = self._archive_page_number(month)
+        if number and self._load_archive_page(number, expect_month=month):
+            return self._archive_url_cache
+
+        # 採番の推測が外れた（JPX側の並びが変わった等）。12ページなら総当たりで足りる。
+        logger.info(f"アーカイブの採番推測が外れたため全ページを走査します: {month}")
+        for candidate in range(1, _ARCHIVE_PAGE_MAX + 1):
+            self._load_archive_page(candidate)
+        self._archive_scanned_all = True
+        return self._archive_url_cache
+
+    @staticmethod
+    def _archive_page_number(month: str, today: date | None = None) -> int | None:
+        """「YYYY-MM」が何番のアーカイブページかを今月からの差で求める。
+
+        01 が前月。当月（差0）は一覧ページ側にあるためアーカイブには無い。
+        推測が外れても _load_archive_page が中身で検証して落とす。
+        """
+        today = today or date.today()
+        try:
+            year, mon = int(month[:4]), int(month[5:7])
+        except (TypeError, ValueError):
+            return None
+        distance = (today.year * 12 + today.month) - (year * 12 + mon)
+        return distance if 1 <= distance <= _ARCHIVE_PAGE_MAX else None
+
+    def _load_archive_page(self, number: int, expect_month: str | None = None) -> bool:
+        """アーカイブ1ページを読み込む。期待した月が入っていれば True。"""
+        url = _ARCHIVE_URL.format(number=number)
+        try:
+            resp = requests.get(url, headers=_HEADERS, timeout=30)
+            resp.raise_for_status()
+        except requests.RequestException as e:
+            # 一覧ページと同じ理由で、失敗は覚え込まない。
+            logger.warning(f"JPXアーカイブ{number:02d}の取得に失敗しました（次回再試行）: {e}")
+            return False
+
+        pdf_map = self._parse_pdf_links(resp.text)
+        if not pdf_map:
+            return False
+
+        months = {key[:7] for key, _ in pdf_map if _DATE_KEY_RE.match(key)}
+        # 取れたぶんは期待外れでもキャッシュする（同じページを二度読まないため）。
+        self._archive_url_cache.update(pdf_map)
+        self._archive_months_loaded |= months
+        return expect_month is None or expect_month in months
+
+    @staticmethod
+    def _parse_pdf_links(html: str) -> dict[tuple[str, str], str]:
+        """ページ内の `YYMMDD-{m,g}.pdf` リンクを日付キーの表にする。"""
+        soup = BeautifulSoup(html, "html.parser")
         pdf_map: dict[tuple[str, str], str] = {}
         for a in soup.find_all("a", href=True):
             href = a["href"]
@@ -230,9 +318,7 @@ class JPXShortSellingClient:
             yyyy_mm_dd = datetime.strptime(yymmdd, "%y%m%d").strftime("%Y-%m-%d")
             pdf_map[(yyyy_mm_dd, kind)] = urljoin(_HOST, href)
             pdf_map[(f"{yymmdd}-{kind}.pdf", kind)] = urljoin(_HOST, href)
-
-        self._pdf_url_cache = pdf_map
-        return self._pdf_url_cache
+        return pdf_map
 
     @staticmethod
     def _normalize_date(d: str) -> str:

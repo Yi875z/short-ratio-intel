@@ -42,3 +42,8 @@ streamlit_*.log
 
 # graphify生成ファイル（大容量）
 graphify-out/
+
+# エージェントのローカル設定（マシン固有のパス・許可リストを含む。公開しない）
+.claude/
+.codex/
+.cursor/

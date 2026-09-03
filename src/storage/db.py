@@ -73,6 +73,32 @@ def get_db_engine():
 # 空売り比率データ
 # ------------------------------------------------------------------
 
+def _record_has_breakdown(record: dict) -> bool:
+    """取得結果がJPX内訳を持っているか。
+
+    stock-marketdata のスクレイパーは比率と売買代金しか持たず、内訳を 0 で返す。
+    「内訳が無い取得結果」と「空売りが無かった日」は別の事実なので、
+    0 の結果で既存の内訳を上書きしてはいけない。市場全体・業種別の両方で
+    同じ判定を使う（判定が2箇所に散ると次は片方だけ直す事故になる）。
+    """
+    return any(
+        record.get(key) or 0
+        for key in ("TotalShortVa", "ShrtWithResVa", "ShrtNoResVa")
+    )
+
+
+def dates_with_breakdown(records: list[dict]) -> list[str]:
+    """内訳を持つ取得結果の日付だけを返す。
+
+    業種別は DELETE→INSERT で入れ替えるため、内訳なしの結果でこれをやると
+    既存の内訳ごと消える。削除を許すのはこの関数が返した日だけにすること。
+    """
+    return sorted({
+        record["Date"] for record in records
+        if record.get("Date") and _record_has_breakdown(record)
+    })
+
+
 def upsert_short_ratio_records(records: list[dict]) -> int:
     """
     空売り比率レコードをUPSERT（既存なら更新、なければ挿入）。
@@ -106,12 +132,19 @@ def upsert_short_ratio_records(records: list[dict]) -> int:
             if existing:
                 # 更新
                 existing.short_ratio_pct = r["ShortRatioPct"]
-                existing.sell_ex_short_va = sell_ex_short_va
-                existing.shrt_with_res_va = shrt_with_res_va
-                existing.shrt_no_res_va = shrt_no_res_va
-                existing.total_short_va = total_short_va
                 existing.total_volume_va = total_volume_va
                 existing.calculated_at = datetime.utcnow()
+
+                # ⚠️ 市場全体と同じ理由で、内訳なしの結果で既存の内訳を潰さない。
+                if _record_has_breakdown(r):
+                    existing.sell_ex_short_va = sell_ex_short_va
+                    existing.shrt_with_res_va = shrt_with_res_va
+                    existing.shrt_no_res_va = shrt_no_res_va
+                    existing.total_short_va = total_short_va
+                elif existing.total_short_va:
+                    logger.info(
+                        f"{r['Date']} {r['S33']}: 内訳なしの取得結果のため既存の内訳を保持します"
+                    )
             else:
                 # 新規挿入
                 row = ShortRatioDaily(
@@ -258,7 +291,7 @@ def upsert_market_short_ratio_records(records: list[dict]) -> int:
                 # JPX公式PDFが一時的に取れなかっただけの日に上書きすると、
                 # 取得済みの正しい内訳が永久に失われる
                 # （2026-09-01 に 7/31・8/26〜8/31 の5営業日ぶんを実際に破壊した）。
-                if total_short_va or shrt_with_res_va or shrt_no_res_va:
+                if _record_has_breakdown(r):
                     existing.sell_ex_short_va = r.get("SellExShortVa", 0)
                     existing.shrt_with_res_va = shrt_with_res_va
                     existing.shrt_no_res_va = shrt_no_res_va

@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from src.analyzer.pressure_metrics import build_pressure_metrics
 from src.data_fetcher.jpx_pdf_client import JPXShortSellingClient
 from src.storage import db
-from src.storage.models import Base, MarketShortRatioDaily
+from src.storage.models import Base, MarketShortRatioDaily, ShortRatioDaily
 
 
 @pytest.fixture
@@ -207,3 +207,46 @@ def test_空売り比率の時系列は内訳なしの日も繋がる():
     assert metrics.total_ratio_change.latest == pytest.approx(41.85)
     # 45.00 → 41.85 の変化として繋がる（0%を挟まない）
     assert metrics.total_ratio_change.dod_pct == pytest.approx(-7.0, abs=0.1)
+
+
+# ------------------------------------------------------------------
+# 6. 業種別テーブルも内訳0で潰さない
+#
+# 市場全体だけ守っても、業種別は DELETE→INSERT で毎日入れ替わるため
+# 内訳が1営業日ぶんずつ静かに失われ続ける。
+# ------------------------------------------------------------------
+def _sector_record(date="2026-08-28", with_breakdown=True):
+    if with_breakdown:
+        return {
+            "Date": date, "S33": "3650", "SectorName": "電気機器",
+            "SellExShortVa": 500_000.0, "ShrtWithResVa": 300_000.0,
+            "ShrtNoResVa": 100_000.0, "TotalShortVa": 400_000.0,
+            "TotalVolumeVa": 900_000.0, "ShortRatioPct": 44.4,
+        }
+    return {
+        "Date": date, "S33": "3650", "SectorName": "電気機器",
+        "SellExShortVa": 0, "ShrtWithResVa": 0, "ShrtNoResVa": 0,
+        "TotalShortVa": 0, "TotalVolumeVa": 900_000.0, "ShortRatioPct": 44.5,
+    }
+
+
+def test_業種別も内訳なしの結果で既存の内訳を潰さない(temp_db):
+    db.upsert_short_ratio_records([_sector_record()])
+    db.upsert_short_ratio_records([_sector_record(with_breakdown=False)])
+
+    with Session(temp_db) as session:
+        row = session.query(ShortRatioDaily).one()
+
+    assert row.total_short_va == 400_000.0, "内訳0の結果で既存の内訳が潰れている"
+    assert row.shrt_with_res_va == 300_000.0
+    assert row.short_ratio_pct == 44.5, "比率は新しい取得結果で更新されるべき"
+
+
+def test_削除は内訳を持つ日だけに限る():
+    """DELETE→INSERT を内訳なしの日にやると、既存の内訳ごと消える。"""
+    records = [
+        _sector_record("2026-09-02", with_breakdown=True),
+        _sector_record("2026-09-01", with_breakdown=False),
+    ]
+
+    assert db.dates_with_breakdown(records) == ["2026-09-02"]

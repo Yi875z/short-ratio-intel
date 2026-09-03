@@ -77,6 +77,7 @@ from src.macro_context.theme_history import (
     find_previous_theme_date,
 )
 from src.storage.db import (
+    dates_with_breakdown,
     delete_short_ratio_records_for_dates,
     get_ai_report,
     get_ai_report_dates,
@@ -834,7 +835,9 @@ def fetch_and_store_short_ratio_date(target_date: str) -> dict:
     saved_sector = 0
     saved_market = 0
     if sector_records:
-        delete_short_ratio_records_for_dates([target_date])
+        # ⚠️ DELETE→INSERT を許すのは内訳を持つ取得結果の日だけ。
+        # スクレイパー由来（内訳0）で消すと、既存の正しい内訳ごと失われる。
+        delete_short_ratio_records_for_dates(dates_with_breakdown(sector_records))
         saved_sector = upsert_short_ratio_records(sector_records)
     if market_record:
         saved_market = upsert_market_short_ratio_records([market_record])
@@ -954,7 +957,8 @@ def fetch_and_store_recent_short_ratio(days: int = AUTO_FETCH_DAYS) -> dict:
         }
 
     if candidate_dates:
-        delete_short_ratio_records_for_dates(candidate_dates)
+        # 内訳を持つ日だけ入れ替える。内訳なしの日は UPSERT 側が既存を守る。
+        delete_short_ratio_records_for_dates(dates_with_breakdown(all_sector_records))
 
     return {
         "target_date": ", ".join(candidate_dates),
@@ -1276,7 +1280,9 @@ def _render_pressure_history_chart(
             f"表示期間のうち {missing_days}営業日は JPX公式PDF の内訳が未取得です"
             "（規制あり比率と空売り代金が途切れています）。"
             "空売り比率と市場売買代金は取得できています。"
-            "左メニューの「指定日を取得」で該当日を取り直すと内訳が埋まります。"
+            "左メニューの「指定日を取得」で取り直せます"
+            "（JPXは当月ぶんを一覧に2営業日、それ以前を月別アーカイブに12ヶ月ぶん公開しています。"
+            "当月の3営業日以上前は翌月まで取り直せません）。"
         )
 
 
@@ -1639,6 +1645,16 @@ def _render_breakdown(today_summary: dict) -> None:
     short_without = breakdown.get("shrt_no_res_va", 0) or 0
     actual = breakdown.get("sell_ex_short_va", 0) or 0
     total_short = breakdown.get("total_short_va", short_with + short_without) or 0
+
+    # ⚠️ 合計売買代金はスクレイパーからも取れるため、それだけを条件にすると
+    # 内訳が無い日に「実注文0.0% / 規制あり0.0%」と表示してしまう。
+    # 「内訳が未取得」と「空売りが無かった」は別の事実（2026-09-01 の事故）。
+    if not (short_with or short_without or total_short):
+        st.info(
+            "この日はJPX公式の内訳が未取得です（空売り比率と売買代金のみ取得済み）。"
+            "左メニューの「指定日を取得」で取り直せます。"
+        )
+        return
 
     cols = st.columns(4)
     cols[0].metric("実注文", _pct(actual / total_volume * 100))

@@ -151,7 +151,8 @@ class FlowSignalAnalyzer:
         t = self.thresholds
 
         if (
-            market_ratio >= t.market_directional_min_pct
+            ratios["has_breakdown"]
+            and market_ratio >= t.market_directional_min_pct
             and ratios["with_ratio"] >= t.market_directional_with_min_pct
         ):
             severity = (
@@ -184,7 +185,7 @@ class FlowSignalAnalyzer:
                 ),
             ))
 
-        if (
+        if ratios["has_breakdown"] and (
             ratios["without_share"] >= t.no_restriction_share_warning_pct
             or ratios["without_ratio"] >= t.no_restriction_ratio_warning_pct
         ):
@@ -249,7 +250,10 @@ class FlowSignalAnalyzer:
             volume_share = other_volume / market_total_volume * 100 if market_total_volume else 0
             if (
                 volume_share >= t.other_volume_share_warning_pct
-                or other_ratios["without_share"] >= t.no_restriction_share_warning_pct
+                or (
+                    other_ratios["has_breakdown"]
+                    and other_ratios["without_share"] >= t.no_restriction_share_warning_pct
+                )
             ):
                 signals.append(FlowSignal(
                     category="その他",
@@ -395,7 +399,10 @@ def _calc_breakdown_ratios(row: dict) -> dict[str, float]:
     short_without = row.get("shrt_no_res_va", 0) or 0
     total_short = row.get("total_short_va", short_with + short_without) or 0
 
+    # ⚠️ 内訳の有無を必ず添える。欠測を0として比較すると、判定が「不成立」になり、
+    # 履歴側では「シグナルが消滅した」という起きていない出来事として記録される。
     return {
+        "has_breakdown": bool(short_with or short_without or total_short),
         "with_ratio": short_with / total_volume * 100 if total_volume else 0,
         "without_ratio": short_without / total_volume * 100 if total_volume else 0,
         "without_share": short_without / total_short * 100 if total_short else 0,

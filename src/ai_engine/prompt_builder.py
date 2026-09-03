@@ -408,11 +408,20 @@ def build_user_prompt(
     market_breakdown = today_summary.get("market_breakdown", {})
     breakdown_text = "  データなし"
     total_volume = market_breakdown.get("total_volume_va", 0)
-    if total_volume:
-        short_with = market_breakdown.get("shrt_with_res_va", 0)
-        short_without = market_breakdown.get("shrt_no_res_va", 0)
-        total_short = market_breakdown.get("total_short_va", short_with + short_without)
-        actual = market_breakdown.get("sell_ex_short_va", 0)
+    short_with = market_breakdown.get("shrt_with_res_va", 0) or 0
+    short_without = market_breakdown.get("shrt_no_res_va", 0) or 0
+    total_short = market_breakdown.get("total_short_va", short_with + short_without) or 0
+    actual = market_breakdown.get("sell_ex_short_va", 0) or 0
+
+    # ⚠️ 合計売買代金はスクレイパーからも取れる。それだけを条件にすると、
+    # 内訳が無い日に「空売り0百万円 (0.0%)」という事実に反する行をAIへ渡してしまう。
+    # 同じプロンプト内の需給レジームは「未取得」と書くため、主張が矛盾する。
+    if total_volume and not (short_with or short_without or total_short):
+        breakdown_text = (
+            "  JPX内訳: 未取得（この日は空売り比率と売買代金のみ取得済み）\n"
+            f"  売買代金合計: {total_volume:,.0f}百万円"
+        )
+    elif total_volume:
         with_ratio = short_with / total_volume * 100
         without_ratio = short_without / total_volume * 100
         without_share = short_without / total_short * 100 if total_short else 0

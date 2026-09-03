@@ -146,6 +146,22 @@ def check_data_freshness(
     return issues
 
 
+def _row_has_breakdown(row: dict) -> bool:
+    """内訳が入っているか。
+
+    breakdown_source 列（2026-09-03 追加）があればそれを正とする。
+    無い行は従来どおり3列で見る。部分パースで規制ありだけ入った日を
+    「内訳なし」と誤認しないため、total_short_va 単独では判定しない。
+    """
+    source = row.get("breakdown_source")
+    if source:
+        return source == "jpx_pdf"
+    return any(
+        row.get(column) or 0
+        for column in ("total_short_va", "shrt_with_res_va", "shrt_no_res_va")
+    )
+
+
 def check_breakdown_gaps(
     rows: list[dict],
     recent_days: int = 10,
@@ -170,15 +186,9 @@ def check_breakdown_gaps(
         reverse=True,
     )[:recent_days]
 
-    # 判定は db._record_has_breakdown() と同じ3列で見る。部分パースで
-    # 規制ありだけ入った日を「内訳あり」と誤認しないため。
     missing = [
         r["date"] for r in recent
-        if (r.get("short_ratio_pct") or 0) > 0
-        and not any(
-            r.get(column) or 0
-            for column in ("total_short_va", "shrt_with_res_va", "shrt_no_res_va")
-        )
+        if (r.get("short_ratio_pct") or 0) > 0 and not _row_has_breakdown(r)
     ]
     if not missing:
         return []

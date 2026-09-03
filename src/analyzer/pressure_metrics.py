@@ -246,7 +246,15 @@ def _build_values(row) -> ValueBlock:
 
 
 def _has_breakdown(row) -> bool:
-    """JPX内訳が実際に入っているか（すべて0なら未取得とみなす）。"""
+    """JPX内訳が実際に入っているか。
+
+    breakdown_source 列があればそれを正とする（'jpx_pdf' なら内訳あり）。
+    列は 2026-09-03 に追加したので、それ以前に作られたローカルDBや
+    列を持たないテスト用の行では従来のヒューリスティクスに落ちる。
+    """
+    source = row.get("breakdown_source")
+    if source:
+        return source == "jpx_pdf"
     return any(
         _as_float(row.get(column))
         for column in ("total_short_va", "shrt_with_res_va", "shrt_no_res_va")

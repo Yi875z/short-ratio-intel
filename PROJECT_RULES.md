@@ -4,7 +4,7 @@
 > 本ファイルへの参照のみを記載し、ルール本文を複製しないこと。
 > 新しいAIエージェントを導入する場合も、そのエージェントの規約ファイルから本ファイルを参照させるだけでよい。
 
-- 最終更新: 2026-09-03（JPX月別アーカイブからの取り直しを実装。内訳の欠測を0として保存・表示しない修正。概要タブに分析日を表示。テスト基準を454件へ更新）
+- 最終更新: 2026-09-03（JPX月別アーカイブからの取り直し、内訳欠測の検知2経路化、breakdown_source 列の追加。テスト基準を466件へ更新）
 - 対象プロジェクト: short-ratio-intel（JPX空売り比率の取得・分析・Gemini AIレポート生成 Streamlit アプリ）
 - 公開区分: L3（コードは一般公開。ナレッジ原本・Secrets・個人データはリポジトリ外で非公開管理）
 
@@ -75,7 +75,7 @@
 - **技術スタック**: Python 3.12（Streamlit Community Cloud 固定。新しすぎる Python は固定依存の wheel が無くビルド失敗する）/
   pandas 2.2.0 / SQLAlchemy 2.0.27 / psycopg2-binary / pydantic 2.6.0 / loguru / feedparser / Streamlit / Gemini API / pytest
 - **起動コマンド**: `streamlit run app/streamlit_app.py`（本番は Streamlit Community Cloud・bcrypt ログイン付き。main へ push すると自動再デプロイ）
-- **テストコマンド**: `pytest`（基準: 全454件パス。2026-09-03 実測 26秒。内訳欠測とアーカイブ取得の回帰テストを追加）
+- **テストコマンド**: `pytest`（基準: 全466件パス。2026-09-03 実測 35秒。内訳欠測・アーカイブ取得・出所記録の回帰テストを追加）
 - **DBスキーマの正**: `src/storage/db.py` の `get_engine()` が `DATABASE_URL` ありで Supabase(PostgreSQL)、無しでローカル SQLite に切替。
   スキーマ定義の正本ファイルは未確認（`src/storage/` 配下を参照）
 - **データソースと取得条件**:
@@ -98,7 +98,13 @@
     業種別は DELETE→INSERT で入れ替えるため、**削除を許すのは `db.dates_with_breakdown()` が
     返した日だけ**にする（内訳なしの日に削除すると既存の内訳ごと消える）。
     比率は再計算せず保存済みの `short_ratio_pct` を正とする。
-    内訳が無い日は画面・AIプロンプトのどちらでも 0 と書かず「未取得」と書く
+    内訳が無い日は画面・AIプロンプトのどちらでも 0 と書かず「未取得」と書く。
+    **内訳の出所は `breakdown_source` 列（`'jpx_pdf'` / `'scraper'`）に記録する**
+    （2026-09-03 追加。マイグレーションは `docs/migrations/2026-09-03_add_breakdown_source.sql`）。
+    内訳4列は `nullable=False, default=0` で「未取得」と「本当に0」を値では区別できないため、
+    書いた側が事実を残す。読む側は列があればそれを正とし、無ければ従来の3列判定に落ちる。
+    **前日比は元の系列の1つ前とだけ比べる**。欠測を詰めた列で比べると、
+    6営業日前との比較を「前日比」として画面とAIに出してしまう（2026-09-01 で実際に発生）
   - RSSニュース（feedparser・ロイター/日経/Bloomberg/Google News）
   - 業種別株価指数の騰落率: nikkei225jp.com の履歴JS（`src/macro_context/sector_price.py`）。
     値に業種名が付かず**並び順のみが同定手段**のため、仕様は `docs/data_sources/sector_price_index.md` を正とする
@@ -135,6 +141,15 @@
     「200 が返った」「短文で1回通った」では判断しない。本番同等の入力でスキーマ検証まで通し、
     **所要時間がタイムアウトの半分以下**であることを条件とする
     （2026-08-24 の AIレポート欠落は、単発 85.5秒のモデルが本番で 600秒超に化けたことが起点）
+- **自己点検と気づく経路**: `pipeline_health.collect_health_issues()` を
+  日次パイプラインのサマリーとStreamlitサイドバーの**2箇所**に出す。
+  Slack通知だけを気づく手段にしないこと（`SLACK_WEBHOOK_URL` 未設定だと黙ってスキップし、
+  2026-04〜08 の内訳欠測が4ヶ月半誰にも気づかれなかった）。
+  severity `critical` だけが日次パイプラインを非ゼロ終了させる。
+  **今日動けば直せて、今日動かないと取り返しがつかないものだけを critical にする**
+  （JPX一覧に載っている直近2営業日ぶんの内訳欠測がこれに当たる）。
+  アーカイブから取り直せる過去日の欠測は `high` に留め、パイプラインは落とさない。
+  鳴りっぱなしの警告は無視される警告になる。
 - **スケジュール実行**（起動は Cloudflare Worker `jpx-report-scheduler` → GitHub Actions
   → Supabase → Streamlit Cloud。PC非依存）:
   **両ワークフローとも `schedule:` を持たない**（2026-09-03、4cb52bc / 96a583e で削除）。

@@ -73,6 +73,14 @@ def get_db_engine():
 # 空売り比率データ
 # ------------------------------------------------------------------
 
+BREAKDOWN_SOURCE_JPX = "jpx_pdf"
+BREAKDOWN_SOURCE_SCRAPER = "scraper"
+
+
+def _breakdown_source(record: dict) -> str:
+    return BREAKDOWN_SOURCE_JPX if _record_has_breakdown(record) else BREAKDOWN_SOURCE_SCRAPER
+
+
 def _record_has_breakdown(record: dict) -> bool:
     """取得結果がJPX内訳を持っているか。
 
@@ -141,6 +149,7 @@ def upsert_short_ratio_records(records: list[dict]) -> int:
                     existing.shrt_with_res_va = shrt_with_res_va
                     existing.shrt_no_res_va = shrt_no_res_va
                     existing.total_short_va = total_short_va
+                    existing.breakdown_source = BREAKDOWN_SOURCE_JPX
                 elif existing.total_short_va:
                     logger.info(
                         f"{r['Date']} {r['S33']}: 内訳なしの取得結果のため既存の内訳を保持します"
@@ -157,6 +166,7 @@ def upsert_short_ratio_records(records: list[dict]) -> int:
                     total_short_va=total_short_va,
                     total_volume_va=total_volume_va,
                     short_ratio_pct=r["ShortRatioPct"],
+                    breakdown_source=_breakdown_source(r),
                 )
                 session.add(row)
             saved += 1
@@ -296,6 +306,7 @@ def upsert_market_short_ratio_records(records: list[dict]) -> int:
                     existing.shrt_with_res_va = shrt_with_res_va
                     existing.shrt_no_res_va = shrt_no_res_va
                     existing.total_short_va = total_short_va
+                    existing.breakdown_source = BREAKDOWN_SOURCE_JPX
                 elif existing.total_short_va:
                     logger.info(
                         f"{date_value}: 内訳なしの取得結果のため、既存のJPX内訳を保持します"
@@ -305,6 +316,7 @@ def upsert_market_short_ratio_records(records: list[dict]) -> int:
                     date=date_value,
                     short_ratio_pct=r["ShortRatioPct"],
                     dod_change=r.get("DodChange"),
+                    breakdown_source=_breakdown_source(r),
                     sell_ex_short_va=r.get("SellExShortVa", 0),
                     shrt_with_res_va=shrt_with_res_va,
                     shrt_no_res_va=shrt_no_res_va,
@@ -396,6 +408,7 @@ def get_market_short_ratio_df(
         "shrt_no_res_va": r.shrt_no_res_va,
         "total_short_va": r.total_short_va,
         "total_volume_va": r.total_volume_va,
+        "breakdown_source": r.breakdown_source,
     } for r in rows])
 
 

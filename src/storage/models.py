@@ -29,6 +29,11 @@ class ShortRatioDaily(Base):
 
     short_ratio_pct = Column(Float, nullable=False, default=0)   # 空売り比率(%)
 
+    # JPX内訳の出所。'jpx_pdf'=内訳4列は実測値 / 'scraper'=内訳を持たず0。
+    # 内訳4列が nullable=False, default=0 のため「未取得」と「本当に0」を
+    # 値では区別できない。推測をやめてここに事実を記録する。
+    breakdown_source = Column(String(16), nullable=True)
+
     calculated_at = Column(
         DateTime, nullable=False, default=datetime.utcnow
     )
@@ -62,6 +67,11 @@ class MarketShortRatioDaily(Base):
 
     short_ratio_pct = Column(Float, nullable=False, default=0)
     dod_change = Column(Float, nullable=True)
+
+    # JPX内訳の出所。'jpx_pdf'=内訳4列は実測値 / 'scraper'=内訳を持たず0。
+    # 内訳4列が nullable=False, default=0 のため「未取得」と「本当に0」を
+    # 値では区別できない。推測をやめてここに事実を記録する。
+    breakdown_source = Column(String(16), nullable=True)
 
     calculated_at = Column(
         DateTime, nullable=False, default=datetime.utcnow

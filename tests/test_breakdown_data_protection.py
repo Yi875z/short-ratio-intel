@@ -372,3 +372,67 @@ def test_削除は内訳を持つ日だけに限る():
     ]
 
     assert db.dates_with_breakdown(records) == ["2026-09-02"]
+
+
+# ------------------------------------------------------------------
+# 7. 出所を列に記録する（推測をやめる）
+#
+# 内訳4列は nullable=False, default=0 なので「未取得」と「本当に0」を
+# 値では区別できない。全レイヤが同じヒューリスティクスを持ち回るのをやめ、
+# 書いた側が事実を記録する。
+# ------------------------------------------------------------------
+def test_JPX由来とスクレイパー由来を列で見分けられる(temp_db):
+    db.upsert_market_short_ratio_records([_jpx_record("2026-09-02")])
+    db.upsert_market_short_ratio_records([_scraper_record("2026-09-01")])
+
+    with Session(temp_db) as session:
+        rows = {
+            r.date: r.breakdown_source
+            for r in session.query(MarketShortRatioDaily).all()
+        }
+
+    assert rows["2026-09-02"] == "jpx_pdf"
+    assert rows["2026-09-01"] == "scraper"
+
+
+def test_内訳を守った日は出所をスクレイパーに書き換えない(temp_db):
+    """内訳はJPX由来のまま残っているので、出所もJPX由来のままが正しい。"""
+    db.upsert_market_short_ratio_records([_jpx_record("2026-08-28")])
+    db.upsert_market_short_ratio_records([_scraper_record("2026-08-28")])
+
+    with Session(temp_db) as session:
+        row = session.query(MarketShortRatioDaily).one()
+
+    assert row.total_short_va == 3_952_607.0
+    assert row.breakdown_source == "jpx_pdf"
+
+
+def test_あとからJPX内訳が入れば出所も更新される(temp_db):
+    db.upsert_market_short_ratio_records([_scraper_record("2026-08-28")])
+    db.upsert_market_short_ratio_records([_jpx_record("2026-08-28")])
+
+    with Session(temp_db) as session:
+        row = session.query(MarketShortRatioDaily).one()
+
+    assert row.breakdown_source == "jpx_pdf"
+
+
+def test_業種別も出所を記録する(temp_db):
+    db.upsert_short_ratio_records([_sector_record(with_breakdown=False)])
+
+    with Session(temp_db) as session:
+        assert session.query(ShortRatioDaily).one().breakdown_source == "scraper"
+
+
+def test_判定は値ではなく出所の列を優先する():
+    """列がある行では、もうヒューリスティクスを使わない。"""
+    row = {
+        "date": "2026-09-02", "short_ratio_pct": 44.8,
+        "total_volume_va": 9_151_252.0, "total_short_va": 4_101_043.0,
+        "shrt_with_res_va": 3_197_029.0, "shrt_no_res_va": 904_014.0,
+        "breakdown_source": "jpx_pdf",
+    }
+    metrics = build_pressure_metrics("2026-09-02", _history([row]))
+
+    assert metrics.values.total_short_va == pytest.approx(4_101_043.0)
+    assert "JPX内訳（空売り代金）" not in metrics.missing_inputs

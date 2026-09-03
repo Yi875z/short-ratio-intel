@@ -4,7 +4,7 @@
 > 本ファイルへの参照のみを記載し、ルール本文を複製しないこと。
 > 新しいAIエージェントを導入する場合も、そのエージェントの規約ファイルから本ファイルを参照させるだけでよい。
 
-- 最終更新: 2026-09-03（JPX内訳の欠測を0として保存・表示しない修正。概要タブに分析日を表示。テスト基準を448件へ更新）
+- 最終更新: 2026-09-03（JPX月別アーカイブからの取り直しを実装。内訳の欠測を0として保存・表示しない修正。概要タブに分析日を表示。テスト基準を454件へ更新）
 - 対象プロジェクト: short-ratio-intel（JPX空売り比率の取得・分析・Gemini AIレポート生成 Streamlit アプリ）
 - 公開区分: L3（コードは一般公開。ナレッジ原本・Secrets・個人データはリポジトリ外で非公開管理）
 
@@ -75,7 +75,7 @@
 - **技術スタック**: Python 3.12（Streamlit Community Cloud 固定。新しすぎる Python は固定依存の wheel が無くビルド失敗する）/
   pandas 2.2.0 / SQLAlchemy 2.0.27 / psycopg2-binary / pydantic 2.6.0 / loguru / feedparser / Streamlit / Gemini API / pytest
 - **起動コマンド**: `streamlit run app/streamlit_app.py`（本番は Streamlit Community Cloud・bcrypt ログイン付き。main へ push すると自動再デプロイ）
-- **テストコマンド**: `pytest`（基準: 全448件パス。2026-09-03 実測 20秒。内訳欠測の回帰テスト一式を追加）
+- **テストコマンド**: `pytest`（基準: 全454件パス。2026-09-03 実測 26秒。内訳欠測とアーカイブ取得の回帰テストを追加）
 - **DBスキーマの正**: `src/storage/db.py` の `get_engine()` が `DATABASE_URL` ありで Supabase(PostgreSQL)、無しでローカル SQLite に切替。
   スキーマ定義の正本ファイルは未確認（`src/storage/` 配下を参照）
 - **データソースと取得条件**:
@@ -84,12 +84,21 @@
     取得元の業種名・日付・列見出しの表記は予告なく変わる（2026-08 に3点同時に変わり3営業日欠測）ため、
     HTMLの契約と復旧手順は `docs/data_sources/short_ratio_karauri.md` を正とする。
     **取得0件はパイプラインを非ゼロ終了させる**（無通知の欠測を防ぐため、fail-soft にしない）。
-    **JPXは直近2営業日ぶんしかPDFをリンクせず、URLはページ固有ハッシュ配下（`.../t13vrt...-att/260902-m.pdf`）で
-    推測できない**（2026-09-03 実測）。一覧から落ちた日の内訳には二度と到達できないため、
-    内訳の欠測は当日中に気づく必要がある（`pipeline_health.check_breakdown_gaps`）。
+    **一覧ページは直近2営業日ぶんしかリンクしないが、それ以前は月別アーカイブに12ヶ月ぶん残っている**
+    （`00-archives-01.html` … `-12.html`。01が前月、12が13ヶ月前。13以降は404。2026-09-03 実測）。
+    URLはページ固有ハッシュ配下（`.../t13vrt...-att/260902-m.pdf`）で推測できないため、
+    必ずページを引いてリンクを拾う（`JPXShortSellingClient._get_archive_url_map`）。
+    **欠測を見つけたら「もう取れない」と判断する前に必ずアーカイブを見に行くこと**
+    （2026-09-03、一覧ページだけを見て「復旧不能」と誤断した実績がある）。
+    ただし**当月ぶんはアーカイブに載らない**ので、当月の3営業日以上前の欠測は翌月まで取り直せない。
+    内訳の欠測は `pipeline_health.check_breakdown_gaps` で検出する。
     スクレイパー側は内訳を持たず0を返す。**0で既存の内訳を上書きしないこと**
-    （2026-09-01 に 7/28〜7/31・8/26〜8/31 の内訳を実際に失った）。
-    比率は再計算せず保存済みの `short_ratio_pct` を正とする
+    （2026-09-01 に 4/20〜8/31 の22営業日ぶんの内訳を実際に潰した）。
+    判定は `db._record_has_breakdown()` の1箇所に置き、市場全体・業種別の両方から使う。
+    業種別は DELETE→INSERT で入れ替えるため、**削除を許すのは `db.dates_with_breakdown()` が
+    返した日だけ**にする（内訳なしの日に削除すると既存の内訳ごと消える）。
+    比率は再計算せず保存済みの `short_ratio_pct` を正とする。
+    内訳が無い日は画面・AIプロンプトのどちらでも 0 と書かず「未取得」と書く
   - RSSニュース（feedparser・ロイター/日経/Bloomberg/Google News）
   - 業種別株価指数の騰落率: nikkei225jp.com の履歴JS（`src/macro_context/sector_price.py`）。
     値に業種名が付かず**並び順のみが同定手段**のため、仕様は `docs/data_sources/sector_price_index.md` を正とする
@@ -126,9 +135,14 @@
     「200 が返った」「短文で1回通った」では判断しない。本番同等の入力でスキーマ検証まで通し、
     **所要時間がタイムアウトの半分以下**であることを条件とする
     （2026-08-24 の AIレポート欠落は、単発 85.5秒のモデルが本番で 600秒超に化けたことが起点）
-- **スケジュール実行**（いずれも GitHub Actions → Supabase → Streamlit Cloud。PC非依存）:
-  - 日本: `daily_fetch.yml` 平日19:07 JST（cron `7 10 * * 1-5`、`scripts/fetch_short_ratio.py`）。Gemini AIレポートあり。
-  - 米国: `us_daily_fetch.yml` 平日08:37 JST（cron `37 23 * * 0-4`、`scripts/fetch_us_short_flow.py`）。
+- **スケジュール実行**（起動は Cloudflare Worker `jpx-report-scheduler` → GitHub Actions
+  → Supabase → Streamlit Cloud。PC非依存）:
+  **両ワークフローとも `schedule:` を持たない**（2026-09-03、4cb52bc / 96a583e で削除）。
+  GitHub の schedule は84分〜10時間遅延する実績があり、時刻の正本は Worker 側の
+  `scheduler/src/index.js` の `SCHEDULE` 配列（JPX_Analysis_System リポジトリ）にJSTで置く。
+  ここを書き換えても本番の起動時刻は変わらないので注意すること。
+  - 日本: `daily_fetch.yml` 平日19:07 JST（`scripts/fetch_short_ratio.py`）。Gemini AIレポートあり。
+  - 米国: `us_daily_fetch.yml` 平日08:37 JST（`scripts/fetch_us_short_flow.py`）。
     FINRA公開が米東部18:00＝JST翌朝07:00(夏)/08:00(冬)のため朝に置く。ルールベース生成でGeminiは呼ばない。
 - **環境差異**: 公開リポジトリのため、ローカル開発環境の詳細（マシン名・ローカルパス等）は本ファイルに記載しない（ルール9）。
 - **公開区分とその根拠**: L3（コード一般公開）。ナレッジ原本・`.env`・`secrets.toml`・個人データ（`data/`・`*.db`）は `.gitignore` 済みで非公開。

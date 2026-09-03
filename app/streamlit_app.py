@@ -1134,6 +1134,13 @@ def _render_pressure_ratio_row(metrics) -> None:
     )
 
 
+def _dod_delta(change):
+    """st.metric のデルタ。算出できない日はチップ自体を出さない（0%と読めるため）。"""
+    if change.dod_pct is None:
+        return None
+    return _fmt_signed_pct(change.dod_pct, 1)
+
+
 def _render_pressure_value_row(metrics) -> None:
     st.markdown("##### ② 代金（絶対額・単位は兆円）")
     values = metrics.values
@@ -1143,14 +1150,18 @@ def _render_pressure_value_row(metrics) -> None:
     cols = st.columns(4)
     cols[0].metric(
         "総空売り代金", _fmt_trillion(values.total_short_va),
-        _fmt_signed_pct(short_change.dod_pct, 1),
-        help="デルタは前営業日比。5日平均比は下段に表示します。",
+        _dod_delta(short_change),
+        help=(
+            "デルタは前営業日比。前営業日の内訳が未取得の日は、"
+            "古い日と比べた値を前日比と偽らないため表示しません。"
+            "5日平均比は下段に表示します。"
+        ),
     )
     cols[1].metric("価格規制あり代金", _fmt_trillion(values.with_restriction_va))
     cols[2].metric("価格規制なし代金", _fmt_trillion(values.without_restriction_va))
     cols[3].metric(
         "市場売買代金", _fmt_trillion(values.market_volume_va),
-        _fmt_signed_pct(volume_change.dod_pct, 1),
+        _dod_delta(volume_change),
     )
 
     sub = st.columns(4)

@@ -193,9 +193,46 @@ def test_内訳なしの日を空売り代金の平均やZスコアに混ぜな�
 
     metrics = build_pressure_metrics("2026-08-09", _history(rows))
 
-    # 直前日(内訳なし)を飛ばして、その前の内訳ありと比較する
-    assert metrics.short_value_change.dod_pct == pytest.approx(2.5)
+    # 平均・Zスコアは欠測を詰めた窓で出す（サンプル数を併記しているため）
     assert metrics.short_value_change.vs_avg_pct == pytest.approx(2.5)
+
+
+def test_前営業日が欠測なら前日比を出さない():
+    """欠測を詰めて比べると、8/25 との比較を「前日比」と称してしまう。
+
+    実際に 8/26〜8/31 が欠測だった 9/1 で、8/25 比が前日比として
+    画面とAIプロンプトに出ていた。算出不能は None であって 0% ではない。
+    """
+    rows = [_row(f"2026-08-{i:02d}", 40.0, 10_000_000.0, 4_000_000.0) for i in range(1, 8)]
+    rows.append(_row("2026-08-08", 43.5, 10_000_000.0))   # 内訳なし
+    rows.append(_row("2026-08-09", 40.0, 10_000_000.0, 4_100_000.0))
+
+    metrics = build_pressure_metrics("2026-08-09", _history(rows))
+
+    assert metrics.short_value_change.dod_pct is None
+
+
+def test_前営業日が揃っていれば前日比を出す():
+    rows = [
+        _row("2026-09-01", 40.0, 10_000_000.0, 4_000_000.0),
+        _row("2026-09-02", 41.0, 10_000_000.0, 4_100_000.0),
+    ]
+    metrics = build_pressure_metrics("2026-09-02", _history(rows))
+
+    assert metrics.short_value_change.dod_pct == pytest.approx(2.5)
+
+
+def test_当日が欠測なら過去の値を当日の値として出さない():
+    """末尾が欠測のとき、直前の内訳あり日が「当日の空売り代金」に化けていた。"""
+    rows = [
+        _row("2026-09-01", 40.0, 10_000_000.0, 4_000_000.0),
+        _row("2026-09-02", 41.0, 10_000_000.0),               # 内訳なし
+    ]
+    metrics = build_pressure_metrics("2026-09-02", _history(rows))
+
+    assert metrics.short_value_change.latest is None
+    assert metrics.short_value_change.dod_pct is None
+    assert metrics.values.total_short_va is None
 
 
 def test_空売り比率の時系列は内訳なしの日も繋がる():

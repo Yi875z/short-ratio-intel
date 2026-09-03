@@ -289,17 +289,26 @@ def _build_change(
 
     平均比とZスコアの窓には**当日を含めない**（当日を含めると自分自身で
     平均を押し上げ、極端な日ほど乖離が小さく見える）。
+
+    ⚠️ 前日比は「1つ前の要素」とだけ比べる。欠測を詰めた列で比べると、
+    8/26〜8/31 が欠測の場合に 9/1 を 8/25 と比較した結果を「前日比」として
+    出してしまう（実際にそう表示していた）。前営業日が欠測なら None を返す。
+    平均比とZスコアは欠測を詰めた窓で構わない（サンプル数を併記しているため）。
     """
-    clean = [v for v in series if v is not None]
-    if not clean:
+    if not series:
         return ChangeBlock(label=label)
 
-    latest = clean[-1]
-    prior = clean[:-1]
+    # 当日が欠測なら、過去の値を「当日の値」として出さない。
+    latest = series[-1]
+    if latest is None:
+        return ChangeBlock(label=label)
+
+    previous = series[-2] if len(series) >= 2 else None
+    prior = [v for v in series[:-1] if v is not None]
 
     dod_pct = None
-    if prior and prior[-1]:
-        dod_pct = round((latest - prior[-1]) / prior[-1] * 100, 2)
+    if previous:
+        dod_pct = round((latest - previous) / previous * 100, 2)
 
     vs_avg_pct = None
     avg_window = prior[-windows.average_window:]

@@ -274,11 +274,11 @@ def build_pressure_regime_prompt_block(target_date: str) -> str:
             "",
             "【空売り代金と市場売買代金の変化（比率とは別の情報）】:",
             f"  総空売り代金: {format_trillion_yen(values.total_short_va)} / "
-            f"前日比 {format_signed_pct(short_change.dod_pct, 1)} / "
+            f"前日比 {_dod_text(short_change)} / "
             f"5日平均比 {format_signed_pct(short_change.vs_avg_pct, 1)} / "
             f"Zスコア {_z_text(short_change)}",
             f"  市場売買代金: {format_trillion_yen(values.market_volume_va)} / "
-            f"前日比 {format_signed_pct(volume_change.dod_pct, 1)} / "
+            f"前日比 {_dod_text(volume_change)} / "
             f"5日平均比 {format_signed_pct(volume_change.vs_avg_pct, 1)} / "
             f"Zスコア {_z_text(volume_change)}",
             f"  空売り比率のZスコア: {_z_text(metrics.total_ratio_change)} / "
@@ -308,6 +308,17 @@ def build_pressure_regime_prompt_block(target_date: str) -> str:
     except Exception as exc:  # noqa: BLE001 レポート生成を止めない
         logger.warning(f"需給レジームブロックの構築に失敗（レポートは継続）: {exc}")
         return "【需給レジーム（機械判定）】:\n  取得失敗（判定なしとして扱うこと）"
+
+
+def _dod_text(change) -> str:
+    """前日比。算出できない日は「—」で済ませず理由まで書く。
+
+    AIは「—」を0や横ばいと読み替えることがある。前営業日が欠測しているのか、
+    値が動かなかったのかは別の事実なので、区別して伝える。
+    """
+    if change.dod_pct is None:
+        return "—（前営業日が未取得で算出不能。横ばいという意味ではない）"
+    return format_signed_pct(change.dod_pct, 1)
 
 
 def _z_text(change) -> str:

@@ -95,28 +95,32 @@ def _market_row(date, ratio, total_short):
     return {"date": date, "short_ratio_pct": ratio, "total_short_va": total_short}
 
 
-def test_JPXがまだ公開している日の欠測はcriticalになる():
-    """今日取り直せば埋まる。逃すと当月中は取れない（アーカイブ入りは翌月）。"""
+def test_当日の欠測はcriticalになる():
+    """データが失われるからではなく、取得経路が壊れているサインだから。
+
+    JPXは当月ぶんを一覧、過去12ヶ月ぶんを月別アーカイブに全営業日ぶん
+    公開しているので、内訳そのものは後からでも取り直せる（2026-09-03 実測）。
+    それでも当日に落ちたことは、その日のうちに知る価値がある。
+    """
     rows = [
         _market_row("2026-08-25", 43.05, 3_320_455),
-        _market_row("2026-08-26", 42.70, 0),
-        _market_row("2026-08-27", 45.00, 0),
+        _market_row("2026-08-26", 42.70, 3_100_000),
+        _market_row("2026-08-27", 45.00, 0),      # 当日
     ]
     issues = check_breakdown_gaps(rows)
 
     assert len(issues) == 1
     assert issues[0].severity == "critical"
     assert issues[0].blocking is True
-    assert "2026-08-26 / 2026-08-27" in issues[0].message
-    assert "backfill_jpx_breakdown" in issues[0].action
+    assert "2026-08-27" in issues[0].message
 
 
-def test_一覧から落ちた日の欠測はcriticalにしない():
-    """月別アーカイブから取り直せるので締切が無い。毎日鳴らすと無視される。"""
+def test_過去日だけの欠測はcriticalにしない():
+    """バックフィルで埋められるので締切が無い。毎日鳴らすと無視される。"""
     rows = [
-        _market_row("2026-08-25", 43.05, 0),      # 一覧から落ちている
-        _market_row("2026-08-26", 42.70, 3_100_000),
-        _market_row("2026-08-27", 45.00, 3_900_000),
+        _market_row("2026-08-25", 43.05, 0),
+        _market_row("2026-08-26", 42.70, 0),
+        _market_row("2026-08-27", 45.00, 3_900_000),   # 当日は取れている
     ]
     issues = check_breakdown_gaps(rows)
 
@@ -126,16 +130,16 @@ def test_一覧から落ちた日の欠測はcriticalにしない():
     assert "アーカイブ" in issues[0].action
 
 
-def test_締切ありと締切なしを別々に鳴らす():
+def test_当日と過去日を別々に鳴らす():
     rows = [
-        _market_row("2026-08-24", 43.0, 0),       # 古い欠測
+        _market_row("2026-08-24", 43.0, 0),       # 過去の欠測
         _market_row("2026-08-25", 43.0, 3_000_000),
         _market_row("2026-08-26", 42.7, 3_100_000),
-        _market_row("2026-08-27", 45.0, 0),       # 一覧に載っている欠測
+        _market_row("2026-08-27", 45.0, 0),       # 当日の欠測
     ]
     issues = check_breakdown_gaps(rows)
 
-    assert [i.severity for i in issues] == ["critical", "high"] or            sorted(i.severity for i in issues) == ["critical", "high"]
+    assert sorted(i.severity for i in issues) == ["critical", "high"]
     assert has_blocking_issues(issues) is True
 
 
@@ -148,7 +152,7 @@ def test_内訳が規制ありだけ入っている日も欠測として数え�
     assert check_breakdown_gaps(rows) == []
 
 
-def test_締切なしの欠測だけならパイプラインを落とさない():
+def test_過去日の欠測だけならパイプラインを落とさない():
     rows = [
         _market_row("2026-08-25", 43.0, 0),
         _market_row("2026-08-26", 42.7, 3_100_000),

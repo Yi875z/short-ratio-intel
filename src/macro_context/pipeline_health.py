@@ -37,9 +37,15 @@ _STALE_DAYS = {
 }
 
 
-# JPXの一覧ページに載っている営業日数。ここに入る欠測は「今日取れば埋まる」ので、
-# 見逃すと当月中は取り直せなくなる（アーカイブへ移るのは翌月）。
-_URGENT_RECOVERY_DAYS = 2
+# 当日ぶん（最新営業日）の欠測だけを critical にする。
+#
+# ⚠️ データが失われるからではない。JPXは当月ぶんを一覧ページに、過去12ヶ月ぶんを
+# 月別アーカイブに全営業日ぶん公開しているので、直近13ヶ月の内訳はいつでも
+# 取り直せる（2026-09-03 実測。ページの日付集合とDBの営業日が完全一致）。
+# critical にする理由は**取得経路が壊れているサイン**だから。
+# 当日の取得でJPX公式PDFに到達できずスクレイパーへ落ちたのなら、それは
+# パイプラインの故障であって、その日のうちに知る価値がある。
+_LATEST_DAYS = 1
 
 _SEVERITY_MARKS = {"critical": "🚨", "high": "🔴", "medium": "🟡"}
 _SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2}
@@ -165,17 +171,18 @@ def _row_has_breakdown(row: dict) -> bool:
 def check_breakdown_gaps(
     rows: list[dict],
     recent_days: int = 10,
-    urgent_days: int = _URGENT_RECOVERY_DAYS,
+    latest_days: int = _LATEST_DAYS,
 ) -> list[HealthIssue]:
     """空売り比率はあるのに JPX内訳が入っていない日を検出する。
 
-    欠測を2種類に分ける。同じ「内訳が無い」でも、締切があるかどうかが違う。
+    欠測を2種類に分ける。分ける基準は「取得経路が今壊れているか」であって、
+    データが失われるかどうかではない（直近13ヶ月ぶんはいつでも取り直せる）。
 
-    - **critical**: JPX一覧ページにまだPDFが載っている直近営業日ぶん。
-      今日取り直せば埋まるが、逃すと当月中は取れない（アーカイブへ移るのは翌月）。
+    - **critical**: 当日（最新営業日）の内訳が取れていない。JPX公式PDFに
+      到達できずスクレイパーへ落ちたということで、取得経路の故障を意味する。
       日次パイプラインを非ゼロ終了させ、GitHub Actions を失敗として見せる。
-    - **high**: それより前の欠測。月別アーカイブ（12ヶ月ぶん）から取り直せるので
-      締切は無い。毎日鳴らして無視される警告にしないため、パイプラインは落とさない。
+    - **high**: それより前の欠測。バックフィルで埋められるので締切は無い。
+      毎日鳴らして無視される警告にしないため、パイプラインは落とさない。
 
     Args:
         rows: {"date", "short_ratio_pct", "total_short_va", ...} を持つ行（順不同）
@@ -193,9 +200,9 @@ def check_breakdown_gaps(
     if not missing:
         return []
 
-    still_listed = {r["date"] for r in recent[:urgent_days]}
-    urgent = sorted(d for d in missing if d in still_listed)
-    older = sorted(d for d in missing if d not in still_listed)
+    latest = {r["date"] for r in recent[:latest_days]}
+    urgent = sorted(d for d in missing if d in latest)
+    older = sorted(d for d in missing if d not in latest)
 
     issues: list[HealthIssue] = []
     if urgent:
@@ -203,10 +210,10 @@ def check_breakdown_gaps(
             severity="critical",
             area="JPX内訳",
             message=(
-                f"JPXがまだ公開している直近{urgent_days}営業日のうち "
-                f"{len(urgent)}日の内訳が未取得です（{' / '.join(urgent)}）"
+                f"当日（{' / '.join(urgent)}）の内訳が未取得です。"
+                "JPX公式PDFに到達できずスクレイパーへ落ちています"
             ),
-            action="今日中に取り直す: python -m scripts.backfill_jpx_breakdown --apply",
+            action="取得経路を確認し python -m scripts.backfill_jpx_breakdown --apply で埋める",
         ))
     if older:
         issues.append(HealthIssue(

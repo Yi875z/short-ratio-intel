@@ -37,17 +37,35 @@ _STALE_DAYS = {
 }
 
 
+# JPXの一覧ページに載っている営業日数。ここに入る欠測は「今日取れば埋まる」ので、
+# 見逃すと当月中は取り直せなくなる（アーカイブへ移るのは翌月）。
+_URGENT_RECOVERY_DAYS = 2
+
+_SEVERITY_MARKS = {"critical": "🚨", "high": "🔴", "medium": "🟡"}
+_SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2}
+
+
 @dataclass(frozen=True)
 class HealthIssue:
-    """点検で見つかった不整合。severity は通知の並び順にだけ使う。"""
+    """点検で見つかった不整合。
 
-    severity: str      # "high" | "medium"
+    severity は通知の並び順と、パイプラインを落とすかどうかの判断に使う。
+    "critical" だけが日次パイプラインを非ゼロ終了させる。今日動けば直せて、
+    今日動かないと取り返しがつかないものだけをここに入れること。
+    鳴りっぱなしの警告は無視される警告になる。
+    """
+
+    severity: str      # "critical" | "high" | "medium"
     area: str
     message: str
     action: str = ""
 
+    @property
+    def blocking(self) -> bool:
+        return self.severity == "critical"
+
     def to_line(self) -> str:
-        mark = "🔴" if self.severity == "high" else "🟡"
+        mark = _SEVERITY_MARKS.get(self.severity, "🟡")
         line = f"{mark} [{self.area}] {self.message}"
         return f"{line} → {self.action}" if self.action else line
 
@@ -131,18 +149,20 @@ def check_data_freshness(
 def check_breakdown_gaps(
     rows: list[dict],
     recent_days: int = 10,
+    urgent_days: int = _URGENT_RECOVERY_DAYS,
 ) -> list[HealthIssue]:
     """空売り比率はあるのに JPX内訳が入っていない日を検出する。
 
-    ⚠️ これは当日中に気づかないと**永久に取り返せない**。
-    JPX の空売り集計ページは直近ぶんしかPDFをリンクしておらず（2026-09-01 時点で1日のみ）、
-    URLの `-att/` 配下はページ固有のハッシュで推測できない。
-    一覧から落ちた過去日のPDFには到達できず、内訳は失われる。
+    欠測を2種類に分ける。同じ「内訳が無い」でも、締切があるかどうかが違う。
 
-    実際に 2026-04〜08 の22営業日ぶんの内訳が復旧不能になった。
+    - **critical**: JPX一覧ページにまだPDFが載っている直近営業日ぶん。
+      今日取り直せば埋まるが、逃すと当月中は取れない（アーカイブへ移るのは翌月）。
+      日次パイプラインを非ゼロ終了させ、GitHub Actions を失敗として見せる。
+    - **high**: それより前の欠測。月別アーカイブ（12ヶ月ぶん）から取り直せるので
+      締切は無い。毎日鳴らして無視される警告にしないため、パイプラインは落とさない。
 
     Args:
-        rows: {"date", "short_ratio_pct", "total_short_va"} を持つ行（日付昇順でなくてよい）
+        rows: {"date", "short_ratio_pct", "total_short_va", ...} を持つ行（順不同）
     """
     recent = sorted(
         (r for r in rows if r.get("date")),
@@ -150,22 +170,50 @@ def check_breakdown_gaps(
         reverse=True,
     )[:recent_days]
 
+    # 判定は db._record_has_breakdown() と同じ3列で見る。部分パースで
+    # 規制ありだけ入った日を「内訳あり」と誤認しないため。
     missing = [
         r["date"] for r in recent
-        if (r.get("short_ratio_pct") or 0) > 0 and not (r.get("total_short_va") or 0)
+        if (r.get("short_ratio_pct") or 0) > 0
+        and not any(
+            r.get(column) or 0
+            for column in ("total_short_va", "shrt_with_res_va", "shrt_no_res_va")
+        )
     ]
     if not missing:
         return []
 
-    return [HealthIssue(
-        severity="high",
-        area="JPX内訳",
-        message=(
-            f"直近{len(recent)}営業日のうち {len(missing)}日で内訳が未取得です"
-            f"（{' / '.join(sorted(missing)[-3:])}）"
-        ),
-        action="当日中に『指定日を取得』で取り直す（JPXは過去分のPDFを公開し続けない）",
-    )]
+    still_listed = {r["date"] for r in recent[:urgent_days]}
+    urgent = sorted(d for d in missing if d in still_listed)
+    older = sorted(d for d in missing if d not in still_listed)
+
+    issues: list[HealthIssue] = []
+    if urgent:
+        issues.append(HealthIssue(
+            severity="critical",
+            area="JPX内訳",
+            message=(
+                f"JPXがまだ公開している直近{urgent_days}営業日のうち "
+                f"{len(urgent)}日の内訳が未取得です（{' / '.join(urgent)}）"
+            ),
+            action="今日中に取り直す: python -m scripts.backfill_jpx_breakdown --apply",
+        ))
+    if older:
+        issues.append(HealthIssue(
+            severity="high",
+            area="JPX内訳",
+            message=(
+                f"直近{len(recent)}営業日のうち {len(older)}日で内訳が未取得です"
+                f"（{' / '.join(older[-3:])}）"
+            ),
+            action="月別アーカイブから復旧: python -m scripts.backfill_jpx_breakdown --apply",
+        ))
+    return issues
+
+
+def has_blocking_issues(issues: list[HealthIssue]) -> bool:
+    """パイプラインを非ゼロ終了させるべきか。"""
+    return any(issue.blocking for issue in issues)
 
 
 def check_validation_staleness(
@@ -237,8 +285,7 @@ def collect_health_issues(today: Optional[date] = None) -> list[HealthIssue]:
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"検証レポート点検に失敗（処理は継続）: {exc}")
 
-    order = {"high": 0, "medium": 1}
-    return sorted(issues, key=lambda i: (order.get(i.severity, 9), i.area))
+    return sorted(issues, key=lambda i: (_SEVERITY_ORDER.get(i.severity, 9), i.area))
 
 
 def format_health_block(issues: list[HealthIssue], limit: int = 8) -> str:

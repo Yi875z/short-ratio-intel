@@ -62,7 +62,11 @@ from src.macro_context.context_builder import (
     build_market_context_bundle,
     build_theme_snapshot_dicts,
 )
-from src.macro_context.pipeline_health import collect_health_issues, format_health_block
+from src.macro_context.pipeline_health import (
+    collect_health_issues,
+    format_health_block,
+    has_blocking_issues,
+)
 from src.storage.db import (
     get_latest_date,
     get_market_short_ratio_df,
@@ -420,15 +424,27 @@ def run(args: argparse.Namespace) -> int:
     # 引き継ぎ文書に書いた宿題は落ちる（2026-07-03 のGDP追記が2ヶ月放置された実例あり）ため、
     # 期限・条件つきの確認は人間の記憶ではなく毎日の通知に載せる。
     try:
-        health_block = format_health_block(collect_health_issues())
+        health_issues = collect_health_issues()
+        health_block = format_health_block(health_issues)
     except Exception as exc:  # noqa: BLE001 点検の失敗で本処理を落とさない
         logger.warning(f"自己点検に失敗（処理は継続）: {exc}")
-        health_block = ""
+        health_issues, health_block = [], ""
     if health_block:
         summary += "\n\n" + health_block
 
+    # ⚠️ Slack が未設定だと通知は黙ってスキップされる。通知だけを気づく手段に
+    # していると、鳴らないまま壊れ続ける（2026-04〜08 の内訳欠測が4ヶ月半
+    # 誰にも気づかれなかった）。今日動かないと取り返せない欠測は、
+    # ワークフローを失敗させて GitHub の画面に赤で出す。
+    blocking = has_blocking_issues(health_issues)
+    if blocking:
+        summary += "\n\n❌ 今日中に対処が必要な問題があるため、非ゼロ終了します。"
+
     logger.success(summary)
     _notify_slack(summary)
+    if blocking:
+        logger.error("自己点検で critical を検出したため異常終了します")
+        return 1
     return 0
 
 

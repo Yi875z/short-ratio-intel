@@ -16,6 +16,7 @@ from src.macro_context.pipeline_health import (
     check_data_freshness,
     check_validation_staleness,
     format_health_block,
+    has_blocking_issues,
 )
 
 
@@ -94,8 +95,8 @@ def _market_row(date, ratio, total_short):
     return {"date": date, "short_ratio_pct": ratio, "total_short_va": total_short}
 
 
-def test_内訳が欠けた日を検出する():
-    """比率はあるのに内訳が0の日は、スクレイパーへ落ちた日。"""
+def test_JPXがまだ公開している日の欠測はcriticalになる():
+    """今日取り直せば埋まる。逃すと当月中は取れない（アーカイブ入りは翌月）。"""
     rows = [
         _market_row("2026-08-25", 43.05, 3_320_455),
         _market_row("2026-08-26", 42.70, 0),
@@ -104,9 +105,56 @@ def test_内訳が欠けた日を検出する():
     issues = check_breakdown_gaps(rows)
 
     assert len(issues) == 1
+    assert issues[0].severity == "critical"
+    assert issues[0].blocking is True
+    assert "2026-08-26 / 2026-08-27" in issues[0].message
+    assert "backfill_jpx_breakdown" in issues[0].action
+
+
+def test_一覧から落ちた日の欠測はcriticalにしない():
+    """月別アーカイブから取り直せるので締切が無い。毎日鳴らすと無視される。"""
+    rows = [
+        _market_row("2026-08-25", 43.05, 0),      # 一覧から落ちている
+        _market_row("2026-08-26", 42.70, 3_100_000),
+        _market_row("2026-08-27", 45.00, 3_900_000),
+    ]
+    issues = check_breakdown_gaps(rows)
+
+    assert len(issues) == 1
     assert issues[0].severity == "high"
-    assert "2日で内訳が未取得" in issues[0].message
-    assert "当日中" in issues[0].action
+    assert issues[0].blocking is False
+    assert "アーカイブ" in issues[0].action
+
+
+def test_締切ありと締切なしを別々に鳴らす():
+    rows = [
+        _market_row("2026-08-24", 43.0, 0),       # 古い欠測
+        _market_row("2026-08-25", 43.0, 3_000_000),
+        _market_row("2026-08-26", 42.7, 3_100_000),
+        _market_row("2026-08-27", 45.0, 0),       # 一覧に載っている欠測
+    ]
+    issues = check_breakdown_gaps(rows)
+
+    assert [i.severity for i in issues] == ["critical", "high"] or            sorted(i.severity for i in issues) == ["critical", "high"]
+    assert has_blocking_issues(issues) is True
+
+
+def test_内訳が規制ありだけ入っている日も欠測として数えない():
+    """部分的にでも内訳が入っていれば、スクレイパー由来の0ではない。"""
+    rows = [{
+        "date": "2026-08-27", "short_ratio_pct": 45.0,
+        "total_short_va": 0, "shrt_with_res_va": 3_000_000, "shrt_no_res_va": 0,
+    }]
+    assert check_breakdown_gaps(rows) == []
+
+
+def test_締切なしの欠測だけならパイプラインを落とさない():
+    rows = [
+        _market_row("2026-08-25", 43.0, 0),
+        _market_row("2026-08-26", 42.7, 3_100_000),
+        _market_row("2026-08-27", 45.0, 3_900_000),
+    ]
+    assert has_blocking_issues(check_breakdown_gaps(rows)) is False
 
 
 def test_内訳が揃っていれば鳴らさない():
@@ -114,8 +162,8 @@ def test_内訳が揃っていれば鳴らさない():
     assert check_breakdown_gaps(rows) == []
 
 
-def test_古い欠落は直近窓の外なので鳴らさない():
-    """取り返しがつかない過去分で鳴り続けても行動できない。"""
+def test_直近窓の外の欠落は鳴らさない():
+    """点検窓より前は日次通知の担当ではない（復旧はバックフィルの担当）。"""
     rows = [_market_row("2026-04-20", 43.0, 0)]
     rows += [_market_row(f"2026-08-{i:02d}", 43.0, 3_000_000) for i in range(18, 29)]
     assert check_breakdown_gaps(rows, recent_days=5) == []

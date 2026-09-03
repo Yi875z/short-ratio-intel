@@ -757,6 +757,48 @@ def _render_sidebar_knowledge_freshness() -> None:
             st.caption("※ ⚠️が無ければ配信ナレッジは原本と同期しています（原本があるPCのみ判定）。")
 
 
+@st.cache_data(ttl=600)
+def _cached_health_issues() -> list[dict]:
+    from src.macro_context.pipeline_health import collect_health_issues
+
+    return [
+        {"severity": i.severity, "area": i.area, "message": i.message, "action": i.action}
+        for i in collect_health_issues()
+    ]
+
+
+def _render_health_panel() -> None:
+    """自己点検の結果をサイドバーに常時出す。
+
+    ⚠️ Slack通知だけを気づく手段にしてはいけない。SLACK_WEBHOOK_URL が未設定だと
+    通知は黙ってスキップされ、壊れたまま何ヶ月も走り続ける（2026-04〜08 の
+    JPX内訳欠測が4ヶ月半誰にも気づかれなかった）。画面は開けば必ず目に入るので、
+    ここを2本目の経路にする。
+    """
+    try:
+        issues = _cached_health_issues()
+    except Exception as exc:  # noqa: BLE001 点検の失敗で画面を落とさない
+        st.caption(f"自己点検を実行できませんでした: {exc}")
+        return
+
+    if not issues:
+        st.caption("✅ 自己点検: 問題なし")
+        return
+
+    critical = [i for i in issues if i["severity"] == "critical"]
+    if critical:
+        st.error(f"🚨 今日中の対処が必要: {len(critical)}件")
+
+    marks = {"critical": "🚨", "high": "🔴", "medium": "🟡"}
+    with st.expander(f"自己点検: {len(issues)}件", expanded=bool(critical)):
+        for issue in issues:
+            st.markdown(
+                f"{marks.get(issue['severity'], '🟡')} **{issue['area']}** — {issue['message']}"
+            )
+            if issue["action"]:
+                st.caption(f"→ {issue['action']}")
+
+
 def _sidebar() -> str | None:
     with st.sidebar:
         st.header("操作")
@@ -799,6 +841,9 @@ def _sidebar() -> str | None:
                 result = fetch_and_store_recent_short_ratio(AUTO_FETCH_DAYS)
             _show_fetch_result(result)
             st.rerun()
+
+        st.divider()
+        _render_health_panel()
 
         st.divider()
         st.caption("ニュース取得")

@@ -4,7 +4,7 @@
 > 本ファイルへの参照のみを記載し、ルール本文を複製しないこと。
 > 新しいAIエージェントを導入する場合も、そのエージェントの規約ファイルから本ファイルを参照させるだけでよい。
 
-- 最終更新: 2026-09-30（既定モデルを 3.6 へ戻し 3.8 は不採用。全モデル 503 時の巡回やり直しと、Worker 重複起動のガードを追加。テスト基準を475件へ更新）
+- 最終更新: 2026-09-30（AIレポートを19項目へ再編・ナレッジを章抽出へ・業種行に自己比と売買代金シェア・表現lint追加・自己点検3件追加。既定モデルを 3.6 へ戻し 3.8 は不採用。全モデル 503 時の巡回やり直しと Worker 重複起動のガード。テスト基準を497件へ更新）
 - 前回: 2026-09-03（JPXの公開範囲を実測し直して訂正＝一覧は当月全営業日・アーカイブは過去12ヶ月全営業日。内訳欠測の検知2経路化、breakdown_source 列の追加）
 - 対象プロジェクト: short-ratio-intel（JPX空売り比率の取得・分析・Gemini AIレポート生成 Streamlit アプリ）
 - 公開区分: L3（コードは一般公開。ナレッジ原本・Secrets・個人データはリポジトリ外で非公開管理）
@@ -76,7 +76,7 @@
 - **技術スタック**: Python 3.12（Streamlit Community Cloud 固定。新しすぎる Python は固定依存の wheel が無くビルド失敗する）/
   pandas 2.2.0 / SQLAlchemy 2.0.27 / psycopg2-binary / pydantic 2.6.0 / loguru / feedparser / Streamlit / Gemini API / pytest
 - **起動コマンド**: `streamlit run app/streamlit_app.py`（本番は Streamlit Community Cloud・bcrypt ログイン付き。main へ push すると自動再デプロイ）
-- **テストコマンド**: `pytest`（基準: 全475件パス。2026-09-30 実測 24秒。巡回やり直し・時間予算・重複起動ガードの回帰テストを追加）
+- **テストコマンド**: `pytest`（基準: 全497件パス。2026-09-30 実測 23秒。レポート再編・lint・ナレッジ章抽出・鮮度・欠落点検の回帰テストを追加）
 - **DBスキーマの正**: `src/storage/db.py` の `get_engine()` が `DATABASE_URL` ありで Supabase(PostgreSQL)、無しでローカル SQLite に切替。
   スキーマ定義の正本ファイルは未確認（`src/storage/` 配下を参照）
 - **データソースと取得条件**:
@@ -193,6 +193,17 @@
   リポ内 `src/knowledge/files/*.md` はローカル fallback 用の縮約版。更新は `python -m scripts.upload_knowledge_to_supabase`。
   読込は loader が Supabase 優先→ローカル fallback。
 - AIレポートのJSONは `gemini_client.py` で `max_output_tokens=32768` ＋ `json-repair` で堅牢化済み。この仕組みを壊さない。
+- **AIレポートの構成と入力（2026-09-30 再編）**:
+  出力は19項目（`output_schema.py`）。重複（結論／サマリー／総括）と、入力外データを誘発する欄（戦略的示唆など）は持たない。
+  **投資判断ガードレールはAIに書かせず `report_renderer.STATIC_GUARDRAILS` の固定文で出す**（品質チェックの必須語もここで満たす）。
+  ナレッジは `prompt_builder.KNOWLEDGE_SECTIONS` の見出しキーワードに当たる章だけを入れる（system 約6.9万→約2.1万字）。
+  **Vault 側で見出しが変わると黙って抜ける**ので `pipeline_health.check_knowledge_sections` が鳴らす。鳴ったらキーワードを合わせる。
+  本アプリ専用ナレッジ `29_SHORT_SELLING_FLOW_PRO_READING.md`（Vault ローカル専用・CANDIDATE）を最優先で入れる。
+  **ナレッジの正本は NEO Vault `01_Knowledge/`**。`C:\CarSol\knowledgefile` はその写しで、Vault 更新後にコピーして
+  `python -m scripts.upload_knowledge_to_supabase` を流す（2026-09-30 まで 7/6 版のまま9/13版が未反映だった）。
+  業種行には自己比Z・パーセンタイル・警戒ゾーン連続日数・売買代金シェアを載せる。**履歴は画面と同じ90日**（AIだけ14日にしない）。
+  表現lint（`report_lint.py`）は、残高語彙・誇張・想定値の捏造・入力外のテクニカル・機械判定との矛盾・古い主体別データの裏付け利用を検出する。
+  lint は生成を止めない（ログと品質パネルに出す）。
 - **需給モニターの算出規約**（`src/analyzer/pressure_metrics.py` / `pressure_regime.py`）:
   空売り比率は残高ではなく**日次フロー**として扱う（残高の語彙を持ち込まない）。
   **比率と絶対額は別の型に分ける**（比率が同じでも商いが半分なら実額は半分）。

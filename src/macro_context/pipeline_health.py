@@ -259,7 +259,9 @@ def check_institutional_flow_freshness(
     """姉妹プロジェクト jpx-analysis の投資主体別（週次）が止まっていないかを見る。
 
     未接続（None）は別の設計判断なので鳴らさない。つながっているのに古い場合だけ鳴らす。
-    2026-09-30 時点で 9/11 週のまま止まっており、レポートが19日前のデータを根拠にしていた。
+    2026-09-30 時点で 9/11 週のまま（19日前）で、レポートがそれを根拠にしていた。
+    原因は連休（9/21〜23）で翌週の公表が 9/29 頃にずれたことと考えられ、故障とは限らない。
+    どちらでも「当日の裏付けに使えない」ことは同じなので鳴らすが、medium に留める。
     """
     from src.macro_context.institutional_flow import FLOW_STALE_AFTER_DAYS, flow_age_days
 
@@ -273,7 +275,7 @@ def check_institutional_flow_freshness(
         severity="medium",
         area="投資主体別",
         message=f"jpx-analysis の週次フローが {week_date} 週のまま（{age}日前）",
-        action="jpx-analysis の週次取得（weekly_fetch.yml）が動いているか確認",
+        action="連休による公表遅れでなければ、jpx-analysis の週次取得（weekly_fetch.yml）を確認",
     )]
 
 

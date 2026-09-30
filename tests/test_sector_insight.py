@@ -2,8 +2,9 @@
 業種別空売りの「文脈」（株価騰落率・4象限・Zスコア・規制内訳・連続日数）の決定論テスト。
 
 この計算はもともと prompt_builder の中にインラインで埋まっており、AIプロンプトの
-文字列としてしか存在しなかった。切り出しても **AIへ渡る行が1文字も変わらない**ことを
-回帰テストで固定する（レポート品質を改修の巻き添えで動かさないため）。
+文字列としてしか存在しなかった。切り出した時点では AIへ渡る行を1文字も変えなかった。
+2026-09-30 に意図して「自己比Z・パーセンタイル・連続日数・売買代金シェア」を行末へ足した
+（従来の表記は先頭にそのまま残すことをテストで固定する）。
 """
 import pandas as pd
 
@@ -137,16 +138,34 @@ def test_high_zone_threshold_comes_from_the_zone_table():
 # ──────────────────────────────────────────────────────────────
 # 回帰: AIプロンプトへ渡る行を変えない
 # ──────────────────────────────────────────────────────────────
-def test_prompt_line_matches_the_previous_format():
+def test_prompt_line_keeps_the_previous_format_as_prefix():
+    """従来の表記は先頭にそのまま残し、自己比と厚みを後ろへ足す（2026-09-30）。"""
     rows = build_sector_insights(_today_summary(), _history(), {"3650": {"change_pct": -1.2}})
 
-    expected = (
+    previous = (
         "電気機器" + " " * 16
         + ": 総空売り 48.0% (+2.5pt) / 株価-1.20% / "
         + "規制あり30.0% / 規制なし20.0% (規制なし構成比40.0%) / 🟠 警戒ゾーン（47〜50%）"
         + " / 比率上昇×株価下落=方向性売り優勢の可能性"
     )
-    assert format_sector_prompt_line(rows[0]) == expected
+    line = format_sector_prompt_line(rows[0])
+    assert line.startswith(previous)
+    assert "自己比Z" in line and "パーセンタイル" in line
+    assert "売買代金シェア50.0%" in line   # 2業種・各1000 → 市場合計2000の半分
+
+
+def test_prompt_line_marks_thin_sectors_as_noise():
+    """売買代金シェアが小さい業種の単日変化をAIが主役にしないよう、行に明記する。"""
+    summary = {
+        "date": "2026-08-24",
+        "market_breakdown": {"total_volume_va": 100_000},
+        "sector_data": [_sector("1050", "鉱業", 30.0, -18.9, "🔵 正常レンジ", volume=200)],
+    }
+    line = format_sector_prompt_line(build_sector_insights(summary, None, {})[0])
+
+    assert "売買代金シェア0.2%" in line
+    assert "薄商い業種" in line
+    assert "自己比Z N/A（履歴不足）" in line
 
 
 def test_prompt_line_without_price_or_dod():
@@ -159,4 +178,4 @@ def test_prompt_line_without_price_or_dod():
 
     assert "(N/A)" in line
     assert "株価N/A" in line
-    assert line.endswith("🟠 警戒ゾーン（47〜50%）")
+    assert "🟠 警戒ゾーン（47〜50%） / 自己比Z N/A" in line

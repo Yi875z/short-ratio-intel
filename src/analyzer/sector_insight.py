@@ -23,6 +23,12 @@ HIGH_ZONE_MIN_RATIO: float = SECTOR_ZONES["high_alert"]["min"]
 # Zスコア／パーセンタイルの窓幅（営業日）。
 _ZSCORE_WINDOW = 60
 
+# 市場売買代金に占めるシェアがこれ未満の業種は「薄商い業種」として扱う（%）。
+# 33業種の平均は約3%。鉱業などは0.1〜0.3%しかなく、少額の売買で比率が10pt以上動く。
+# 2026-09-30 のレポートは鉱業の -18.9pt を「壊滅的下落」と書いていた。
+# プロは比率の変化を売買代金で重みづけて読む。単日の大変化は、厚い業種でなければ信号にしない。
+THIN_SECTOR_SHARE_PCT: float = 0.5
+
 # 判定に必要な最低サンプル数。AnomalyDetector._calc_zscore と同じ 5 件に揃える。
 # 米国側は窓幅を満たすことを要求するが、業種別空売りは休場・欠測で履歴が浅い日があるため、
 # 窓に対する比率ではなく「最低件数」として扱う。
@@ -102,6 +108,11 @@ def build_sector_insights(
     target_date = today_summary.get("date")
     rows: list[dict] = []
 
+    # 売買代金シェアの分母。市場全体（JPX公式・33業種外を含む）を優先し、無ければ業種の合計。
+    market_volume = (today_summary.get("market_breakdown") or {}).get("total_volume_va") or sum(
+        (s.get("total_volume_va") or 0) for s in today_summary.get("sector_data", [])
+    )
+
     for s in today_summary.get("sector_data", []):
         s33_code = s.get("s33_code")
         dod = s.get("dod_change")
@@ -139,23 +150,49 @@ def build_sector_insights(
             "without_ratio": _ratio(short_without, total_volume),
             "without_share": _ratio(short_without, total_short),
             "streak_days": count_zone_streak(history_df, s33_code),
+            "volume_share": _ratio(total_volume, market_volume) if market_volume else None,
         })
 
     return rows
 
 
 def format_sector_prompt_line(row: dict) -> str:
-    """AIプロンプト用の業種1行。表記は従来のままに保つ（レポート品質を動かさないため）。"""
+    """AIプロンプト用の業種1行。
+
+    2026-09-30 に「自己比」と「厚み」を足した。それまでAIは固定の絶対水準ゾーン
+    （43〜47% 等）しか見ておらず、業種ごとに構造的に違う水準を横並びで読んでいた。
+    Zスコア・パーセンタイル・連続日数は画面では出していたのにAIへ渡していなかった。
+    """
     dod = row.get("dod_change")
     dod_str = f"{dod:+.1f}pt" if dod is not None else "N/A"
     change_pct = row.get("change_pct")
     price_str = f"株価{change_pct:+.2f}%" if change_pct is not None else "株価N/A"
     quadrant = row.get("quadrant") or ""
 
-    return (
+    line = (
         f"{row['sector_name']:20s}: 総空売り{row['short_ratio_pct']:5.1f}% ({dod_str}) / "
         f"{price_str} / "
         f"規制あり{row['with_ratio']:4.1f}% / 規制なし{row['without_ratio']:4.1f}% "
         f"(規制なし構成比{row['without_share']:4.1f}%) / {row['zone_label']}"
         + (f" / {quadrant}" if quadrant else "")
     )
+
+    zscore_value = row.get("zscore")
+    percentile = row.get("percentile")
+    if zscore_value is not None:
+        line += f" / 自己比Z{zscore_value:+.1f}"
+        if percentile is not None:
+            line += f"（過去60日の{percentile:.0f}パーセンタイル）"
+    else:
+        line += " / 自己比Z N/A（履歴不足）"
+
+    streak = row.get("streak_days") or 0
+    if streak >= 2:
+        line += f" / 警戒ゾーン{streak}日連続"
+
+    share = row.get("volume_share")
+    if share is not None:
+        line += f" / 売買代金シェア{share:.1f}%"
+        if share < THIN_SECTOR_SHARE_PCT:
+            line += "（薄商い業種: 単日の比率変化はノイズとして扱う）"
+    return line

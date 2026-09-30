@@ -75,7 +75,12 @@ KNOWLEDGE_SECTIONS: dict[str, list[str]] = {
         "データ取得不能時の回答ルール",
     ],
 }
-_KNOWLEDGE_SECTION_LIMIT = 6000      # 1ナレッジから入れる上限（抽出後）
+# 1ナレッジから入れる上限（抽出後）。6000 では 7/6 版の jpx_micro が 6,048字で末尾が切れていた
+# （独立レビュー #12）。切れたら missing_knowledge_sections が「上限で切り詰め」として鳴らす。
+_KNOWLEDGE_SECTION_LIMIT = 8000
+
+# 本番で必ず入っていてほしいナレッジ（空なら AI は `[ファイル未配置]` を読むことになる）
+REQUIRED_KNOWLEDGE_KEYS = ["short_flow_pro", *KNOWLEDGE_SECTIONS.keys()]
 _KNOWLEDGE_FALLBACK_CLIP = 3000      # 見出しが1つも当たらないときの退避（丸ごとには戻さない）
 
 
@@ -191,7 +196,8 @@ Markdownのコードブロック（```）は使わず、純粋なJSONのみを�
 - 価格規制なしは「裁定・ヘッジ・流動性供給」を含みやすく、単独で弱気売りと断定しない
 - 規制なし構成比が高い場合は、ベア圧力よりもヘッジ/裁定フローの混入を疑う
 - 「その他（33業種外）」はETF・REIT等を含むため、指数ヘッジやパッシブ/裁定フローの影響として必ず別枠で評価する
-- レポートでは「方向性売り主導」か「ヘッジ・裁定主導」かを明確に分類する
+- レポートでは「方向性売り寄り」か「ヘッジ・裁定寄り」かを判断材料とともに示す。集計データだけでは識別できない日は
+  「識別不能」と書いてよい（価格規制ありにも、適用除外に当たらないヘッジ売りや信用取引の新規売り＝優待クロス等が入る）
 - 価格規制ありが高くても「機関の確信的売り」と断定しない。マクロ、前日比、週次推移、業種特性を合わせて「方向性売り寄り」と表現する
 
 ## 業種別の空売り比率×株価の4象限ルール（最重要）
@@ -199,11 +205,11 @@ Markdownのコードブロック（```）は使わず、純粋なJSONのみを�
 - 業種別データには、空売り比率の前日比（pt）と、同じ業種の株価指数の前日騰落率（%）が併記される。
   **比率の水準だけで弱気と判断してはならない。必ず株価の反応と組み合わせて読む。**
 - 4象限の読み分け（いずれも可能性であり断定しない）:
-  - 比率上昇 × 株価上昇 = 売りが吸収されている。踏み上げ・押し目買い優勢の可能性。
+  - 比率上昇 × 株価上昇 = 空売りの増加を買いがこなした（売り吸収の可能性）。
     ここを「高い空売り比率＝弱気」と読むのは誤り。売り方が劣勢な場面である可能性を先に検討する。
   - 比率上昇 × 株価下落 = 方向性売り優勢の可能性。ただし規制なし構成比が高ければヘッジ・裁定の混入を疑う。
-  - 比率低下 × 株価上昇 = ショートカバー主導の可能性。新規の買いではなく買い戻しで上げている場合、
-    カバーが一巡すると上昇の勢いが続かない可能性を併記する。
+  - 比率低下 × 株価上昇 = ショートカバー「候補」。比率の低下は新規の空売りが減ったことで、買い戻しの証拠ではない。
+    空売り残高・信用売り残など入力に無いポジション側データで確認するまで「踏み上げ」「カバー主導」と断定しない。
   - 比率低下 × 株価下落 = 売り圧力は後退しているが買いが不在の可能性。売り方の撤退を強気材料と即断しない。
 - 株価が「N/A」の業種は騰落率を取得できていない。その業種では象限を断定せず、比率のみの解釈に留める。
 - 業種ごとに空売り比率の平常水準は構造的に違う。「高い／低い」は固定ゾーンではなく**自己比Z・パーセンタイル**で判断し、ゾーンは目安に留める。
@@ -350,8 +356,8 @@ def _z_text(change) -> str:
     return f"{change.zscore:+.2f}"
 
 
-# 画面の _cached_sector_history(days=90) と揃える
-SECTOR_HISTORY_DAYS = 90
+# 画面・異常値検知と共通の定数（sector_insight が正本）
+from src.analyzer.sector_insight import SECTOR_HISTORY_DAYS  # noqa: E402
 
 
 def _sector_history_for_prompt(target_date: str, fallback_df):
@@ -502,13 +508,20 @@ def build_user_prompt(
         other_without = other.get("shrt_no_res_va", 0) or 0
         other_short = other.get("total_short_va", other_with + other_without) or 0
         market_volume = market_breakdown.get("total_volume_va", 0) or 0
-        other_text = (
-            f"  その他（33業種外）: 総空売り{other['short_ratio_pct']:.1f}% / "
-            f"規制あり{(other_with / other_volume * 100) if other_volume else 0:.1f}% / "
-            f"規制なし{(other_without / other_volume * 100) if other_volume else 0:.1f}% / "
-            f"規制なし構成比{(other_without / other_short * 100) if other_short else 0:.1f}% / "
-            f"市場売買代金シェア{(other_volume / market_volume * 100) if market_volume else 0:.1f}%"
-        )
+        if not (other_with or other_without):
+            # 内訳が無い日（スクレイパー経路）に「規制あり0.0%」と書くと事実に反する
+            other_text = (
+                f"  その他（33業種外）: 総空売り{other['short_ratio_pct']:.1f}% / "
+                "規制あり/なし内訳: 未取得"
+            )
+        else:
+            other_text = (
+                f"  その他（33業種外）: 総空売り{other['short_ratio_pct']:.1f}% / "
+                f"規制あり{(other_with / other_volume * 100) if other_volume else 0:.1f}% / "
+                f"規制なし{(other_without / other_volume * 100) if other_volume else 0:.1f}% / "
+                f"規制なし構成比{(other_without / other_short * 100) if other_short else 0:.1f}% / "
+                f"市場売買代金シェア{(other_volume / market_volume * 100) if market_volume else 0:.1f}%"
+            )
 
     # 支配的マクロ背景の起点は「運用者ハウスビュー」を最優先。無ければ固定ベースライン。
     effective_baseline, baseline_source = effective_macro_context()
@@ -706,20 +719,41 @@ def _extract_sections(
         logger.warning(f"ナレッジの見出しが見つからない（Vault側で変わった可能性）: {missing}")
     if not body:
         return _clip(text, _KNOWLEDGE_FALLBACK_CLIP)
+    if len(body) > max_chars:
+        logger.warning(f"ナレッジの抽出が上限 {max_chars}字を超えて切り詰め（{len(body)}字）")
     return _clip(body, max_chars)
 
 
-def missing_knowledge_sections(knowledge: dict[str, str] | None = None) -> dict[str, list[str]]:
-    """KNOWLEDGE_SECTIONS のうち、いまのナレッジに見出しが無いものを返す（点検用）。"""
+def missing_knowledge_sections(
+    knowledge: dict[str, str] | None = None,
+    require_all: bool = True,
+) -> dict[str, list[str]]:
+    """AIに渡すナレッジの欠け（点検用）を {key: [問題, ...]} で返す。
+
+    - 「（未登録）」: REQUIRED_KNOWLEDGE_KEYS の本文が空。本番DBに upload されていない
+      （2026-09-30、ナレッジ29を「最優先で参照」と書いたのに本番に入っていなかった。独立レビュー #2）
+    - 見出しキーワード: その章が見つからない（Vault 側の見出し変更）
+    - 「（上限で切り詰め）」: 抽出結果が上限を超え、末尾が落ちている
+    require_all=False なら未登録は鳴らさない（ローカル開発・テスト用）。
+    """
     knowledge = knowledge if knowledge is not None else load_effective_knowledge()
     result: dict[str, list[str]] = {}
-    for key, keywords in KNOWLEDGE_SECTIONS.items():
+    for key in REQUIRED_KNOWLEDGE_KEYS:
         text = knowledge.get(key, "")
         if not text:
-            continue  # 未配置は別の問題（ローカル開発など）。ここでは鳴らさない
-        _, missing = _select_sections(text, keywords)
-        if missing:
-            result[key] = missing
+            if require_all:
+                result[key] = ["（未登録）"]
+            continue
+        problems: list[str] = []
+        if key in KNOWLEDGE_SECTIONS:
+            body, missing = _select_sections(text, KNOWLEDGE_SECTIONS[key])
+            problems += missing
+        else:
+            body = text
+        if len(body) > _KNOWLEDGE_SECTION_LIMIT:
+            problems.append(f"（上限{_KNOWLEDGE_SECTION_LIMIT}字で切り詰め・{len(body)}字）")
+        if problems:
+            result[key] = problems
     return result
 
 

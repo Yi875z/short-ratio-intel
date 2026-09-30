@@ -81,7 +81,14 @@ def build_client(monkeypatch):
         monkeypatch.setattr(gc.time, "sleep", lambda s: slept.append(s))
 
         client = gc.GeminiReportGenerator()
-        monkeypatch.setattr(client, "_parse_response", lambda raw: f"parsed:{raw}")
+        # 中身のある応答とみなされる最小の形（結論あり・注目業種3件）。空に近い応答の扱いは別テスト。
+        from types import SimpleNamespace
+
+        monkeypatch.setattr(
+            client,
+            "_parse_response",
+            lambda raw: SimpleNamespace(executive_summary=f"parsed:{raw}", top_sectors_analysis=[1, 2, 3]),
+        )
         monkeypatch.setattr(client, "_render_markdown", lambda obj, date: f"md:{obj}")
         return client, fake, slept
 
@@ -382,6 +389,25 @@ def test_rounds_stop_before_exceeding_the_time_budget(build_client, monkeypatch)
     assert len(fake.calls) < 100
 
 
+def test_empty_report_falls_back_to_next_model(build_client, monkeypatch):
+    """`{}` のような空に近い応答は成功として保存せず、次のモデルへ回す（独立レビュー #6）。"""
+    from types import SimpleNamespace
+
+    client, fake, _ = build_client(["EMPTY", "EMPTY", "EMPTY", "FULL"])
+    monkeypatch.setattr(
+        client,
+        "_parse_response",
+        lambda raw: SimpleNamespace(
+            executive_summary="" if raw == "EMPTY" else "結論",
+            top_sectors_analysis=[] if raw == "EMPTY" else [1, 2, 3],
+        ),
+    )
+    _generate(client)
+
+    assert [c["model"] for c in fake.calls] == ["model-primary"] * 3 + ["model-backup"]
+    assert client.model_name == "model-backup"
+
+
 def test_parse_error_is_not_retried_in_later_rounds(build_client, monkeypatch):
     """パース失敗はモデルを変えても待っても直らないので、巡回し直さない。"""
     parse_error = ValueError("1 validation error for ReadingReport")
@@ -438,8 +464,11 @@ def test_workflow_guards_duplicate_worker_dispatch(name):
     # 本処理は guard の判定に従う
     fetch_section = workflow.split("\n  fetch:\n", 1)[1]
     assert "needs: guard" in fetch_section
-    assert "if: needs.guard.outputs.skip != 'true'" in fetch_section
-    # 自分自身の run を数えない（数えると必ずスキップになる）
-    assert "select(.id != ${GITHUB_RUN_ID})" in workflow
+    assert "needs.guard.outputs.skip != 'true'" in fetch_section
+    # 自分より前の run だけを数える（自分を数えると必ずスキップ、!= だと同時起動の2本が両方止まる）
+    assert "select(.id < ${GITHUB_RUN_ID})" in workflow
+    # 照会に失敗したら実行する側に倒し、guard の失敗で本処理が消えないようにする（独立レビュー #7）
+    assert "!cancelled()" in fetch_section
+    assert "照会に失敗。重複判定せずに実行する" in workflow
     # workflow_dispatch は Worker の入口。消さない
     assert "workflow_dispatch:" in workflow

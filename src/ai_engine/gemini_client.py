@@ -25,6 +25,19 @@ from src.ai_engine.report_lint import lint_report_markdown
 from src.ai_engine.report_renderer import render_report_markdown
 
 
+class EmptyReportError(ValueError):
+    """JSONとしては読めたが、中身が空に近い応答（途中切れを json-repair で直した結果など）。
+
+    スキーマの全欄に既定値があるため、`{}` でも検証を通って「成功」として保存されていた。
+    その場合は退避モデルも試されず、欠落点検も「レポートあり」と判定する（独立レビュー #6）。
+    一時エラーとして扱い、次のモデルへ回す。
+    """
+
+
+# 中身があるとみなす最低条件。本日の結論があり、注目業種を最低この数だけ分析していること。
+_MIN_TOP_SECTORS = 3
+
+
 class GeminiReportGenerator:
     """Gemini を使った空売り比率レポート生成クラス"""
 
@@ -220,6 +233,14 @@ class GeminiReportGenerator:
 
                 # JSONパース
                 report_obj = self._parse_response(raw_text)
+                if (
+                    not (report_obj.executive_summary or "").strip()
+                    or len(report_obj.top_sectors_analysis) < _MIN_TOP_SECTORS
+                ):
+                    raise EmptyReportError(
+                        f"応答の中身が空に近い（結論{'あり' if report_obj.executive_summary else 'なし'}"
+                        f"・注目業種{len(report_obj.top_sectors_analysis)}件）"
+                    )
 
                 # Markdown形式にレンダリング
                 markdown = self._render_markdown(report_obj, target_date)
@@ -234,7 +255,8 @@ class GeminiReportGenerator:
 
             except Exception as e:
                 last_error = e
-                kind = self._classify_error(str(e))
+                # 空に近い応答はモデル側の一時的な失敗として扱う（別モデル・次の巡回で直る見込みがある）
+                kind = "api" if isinstance(e, EmptyReportError) else self._classify_error(str(e))
                 logger.error(
                     f"Gemini APIエラー (model={model_name} "
                     f"attempt {attempt + 1}/{attempts}, 種別={kind}): {e}"

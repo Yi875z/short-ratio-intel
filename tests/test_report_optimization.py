@@ -157,11 +157,86 @@ def test_missing_heading_is_reported_and_not_filled_with_whole_file():
 
 def test_missing_knowledge_sections_feeds_health_check():
     knowledge = {"jpx_micro": _FAKE_JPX, "user_rules": "", "project_protocol": ""}
-    missing = pb.missing_knowledge_sections(knowledge)
+    missing = pb.missing_knowledge_sections(knowledge, require_all=False)
     assert "現行の市場ルール" in missing["jpx_micro"]
-    assert "user_rules" not in missing          # 未配置は別問題として鳴らさない
+    assert "user_rules" not in missing          # ローカル開発では未配置を鳴らさない
     issues = check_knowledge_sections(missing)
     assert issues and issues[0].severity == "medium"
+
+
+def test_unregistered_required_knowledge_is_reported():
+    """本番DBに upload されていないナレッジ（ナレッジ29など）を鳴らす（独立レビュー #2）。"""
+    missing = pb.missing_knowledge_sections({"jpx_micro": _FAKE_JPX})
+    assert missing["short_flow_pro"] == ["（未登録）"]
+    assert missing["user_rules"] == ["（未登録）"]
+
+
+def test_clipped_knowledge_is_reported():
+    """抽出結果が上限を超えて末尾が落ちたら鳴らす（独立レビュー #12: 6,048字が6,000字で切れていた）。"""
+    long_text = "## 0. JPX空売り比率・価格規制内訳の解釈ルール\n" + "あ" * (pb._KNOWLEDGE_SECTION_LIMIT + 10)
+    missing = pb.missing_knowledge_sections(
+        {"jpx_micro": long_text, "short_flow_pro": "x" * (pb._KNOWLEDGE_SECTION_LIMIT + 1)},
+        require_all=False,
+    )
+    assert any("切り詰め" in p for p in missing["jpx_micro"])
+    assert any("切り詰め" in p for p in missing["short_flow_pro"])
+
+
+def test_empty_report_scores_lower_than_a_written_one():
+    """中身が空のレポートが実レポートより高く採点される逆転を起こさない（独立レビュー #5）。"""
+    from src.ai_engine.report_quality import evaluate_report_quality
+
+    empty = ReadingReport()
+    empty_q = evaluate_report_quality(render_report_markdown(empty, "2026-09-30"), empty.model_dump_json())
+
+    written = ReadingReport(
+        executive_summary="結論", supply_demand_regime_analysis="事実: NEUTRAL。",
+        jpx_short_selling_breakdown_analysis="事実: 規制あり34.7%。", theme_shift_analysis="浮上中。",
+        top_sectors_analysis=[SectorAnalysis(sector_name=n, short_ratio_pct=45.0, interpretation="i")
+                              for n in ("a", "b", "c")],
+        confirmation_conditions=["a", "b", "c"], false_positive_risks=["a", "b"],
+        dominant_market_themes=[],
+    )
+    written_q = evaluate_report_quality(render_report_markdown(written, "2026-09-30"), written.model_dump_json())
+
+    assert empty_q.status_label == "要修正"          # 本日の結論が空 → high
+    assert written_q.score_pct > empty_q.score_pct
+
+
+def test_position_data_names_are_not_flagged_as_balance():
+    """信用残・建玉残高は見に行くべきポジション側のデータ名であり、誤検知しない（独立レビュー #5）。"""
+    assert "flow_as_balance" not in _codes("- 信用取引残高（買い残の整理状況および売り残の増減）")
+    assert "flow_as_balance" not in _codes("- 日経225オプションのStrike別詳細建玉残高")
+
+
+def test_market_dod_is_filled_from_the_series_without_bridging_gaps():
+    """東証全体の前日比が None のまま保存されていても、前営業日と比べて埋める（独立レビュー #4）。"""
+    import pandas as pd
+
+    from src.storage.db import fill_market_dod
+
+    df = pd.DataFrame({
+        "date": ["2026-09-17", "2026-09-18", "2026-09-24", "2026-09-28"],
+        "short_ratio_pct": [41.39, 39.43, 41.05, 44.30],
+        "dod_change": [None, None, None, None],
+    })
+    # 営業日の手がかり: 9/25 が営業日なのに欠けている → 9/28 は前営業日と比べられない
+    trading = {"2026-09-17", "2026-09-18", "2026-09-24", "2026-09-25", "2026-09-28"}
+    out = fill_market_dod(df, trading)
+
+    assert out.loc[1, "dod_change"] == -1.96        # 9/17 → 9/18
+    assert out.loc[2, "dod_change"] == 1.62         # 9/18 → 9/24（間は連休で営業日なし）
+    assert out.loc[3, "dod_change"] is None         # 9/25 が欠けているので埋めない
+
+
+def test_market_dod_keeps_stored_values():
+    import pandas as pd
+
+    from src.storage.db import fill_market_dod
+
+    df = pd.DataFrame({"date": ["2026-09-17", "2026-09-18"], "short_ratio_pct": [41.0, 39.0],
+                       "dod_change": [None, -9.9]})
+    assert fill_market_dod(df, set()).loc[1, "dod_change"] == -9.9
 
 
 # ──────────────────────────────────────────────────────────────

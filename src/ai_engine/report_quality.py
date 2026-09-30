@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from src.ai_engine.report_lint import lint_report_markdown
+from src.ai_engine.report_renderer import STATIC_GUARDRAILS
 
 
 @dataclass(frozen=True)
@@ -301,27 +302,33 @@ def evaluate_report_quality(
     items: list[ReportQualityItem] = []
     markdown = markdown or ""
 
-    for label, token in REQUIRED_MARKDOWN_SECTIONS:
-        passed = token in markdown
-        items.append(ReportQualityItem(
-            category="構成",
-            check_name=label,
-            passed=passed,
-            severity="medium",
-            message="必須セクションがあります。" if passed else "必須セクションが見つかりません。",
-        ))
+    # 新形式（2026-09-30〜）は見出しと固定ガードレールを描画側が必ず出すので、それを採点すると
+    # 中身が空のレポートでも点が入る（全欄空で75%・実レポートは49〜76%という逆転が起きた）。
+    # 新形式ではAIが書いた欄だけを採点し、見出し・ガードレール語の点検は旧形式にだけ使う。
+    is_new_format = STATIC_GUARDRAILS[0] in markdown
 
-    for label, terms in REQUIRED_GUARDRAIL_TERMS:
-        matched = [term for term in terms if term in markdown]
-        passed = bool(matched)
-        items.append(ReportQualityItem(
-            category="ガードレール",
-            check_name=label,
-            passed=passed,
-            severity="high" if label in {"日次フロー明記", "売買推奨ではない"} else "medium",
-            message="安全表現を確認しました。" if passed else "安全表現が不足している可能性があります。",
-            evidence=", ".join(matched),
-        ))
+    if not is_new_format:
+        for label, token in REQUIRED_MARKDOWN_SECTIONS:
+            passed = token in markdown
+            items.append(ReportQualityItem(
+                category="構成",
+                check_name=label,
+                passed=passed,
+                severity="medium",
+                message="必須セクションがあります。" if passed else "必須セクションが見つかりません。",
+            ))
+
+        for label, terms in REQUIRED_GUARDRAIL_TERMS:
+            matched = [term for term in terms if term in markdown]
+            passed = bool(matched)
+            items.append(ReportQualityItem(
+                category="ガードレール",
+                check_name=label,
+                passed=passed,
+                severity="high" if label in {"日次フロー明記", "売買推奨ではない"} else "medium",
+                message="安全表現を確認しました。" if passed else "安全表現が不足している可能性があります。",
+                evidence=", ".join(matched),
+            ))
 
     for issue in lint_report_markdown(markdown, input_text=input_text):
         items.append(ReportQualityItem(
@@ -361,8 +368,42 @@ def evaluate_report_quality(
     return ReportQualitySummary(items=items)
 
 
+# AIが書く中核の文章欄。空・「未生成」ならその欄を書けていない（新形式の採点の中心）。
+# executive_summary が空のレポートは中身が無いに等しいので high。
+REQUIRED_JSON_TEXT_FIELDS = [
+    ("executive_summary", "本日の結論", "high"),
+    ("supply_demand_regime_analysis", "需給レジーム分析", "medium"),
+    ("jpx_short_selling_breakdown_analysis", "JPX内訳分析", "medium"),
+    ("theme_shift_analysis", "テーマ転換分析", "medium"),
+]
+REQUIRED_SECTOR_COUNT = 3
+
+
 def _evaluate_json_fields(data: dict[str, Any]) -> list[ReportQualityItem]:
     items: list[ReportQualityItem] = []
+
+    for field_name, label, severity in REQUIRED_JSON_TEXT_FIELDS:
+        value = str(data.get(field_name) or "").strip()
+        passed = bool(value) and "未生成" not in value
+        items.append(ReportQualityItem(
+            category="AI記述",
+            check_name=label,
+            passed=passed,
+            severity=severity,
+            message="AIが記述しています。" if passed else "空、または未生成のままです。",
+            evidence=field_name,
+        ))
+
+    sectors = data.get("top_sectors_analysis")
+    sector_count = len(sectors) if isinstance(sectors, list) else 0
+    items.append(ReportQualityItem(
+        category="AI記述",
+        check_name="注目業種の分析",
+        passed=sector_count >= REQUIRED_SECTOR_COUNT,
+        severity="medium",
+        message=f"{sector_count}業種を確認しました。",
+        evidence="top_sectors_analysis",
+    ))
     for field_name, label, min_count in REQUIRED_JSON_LIST_FIELDS:
         value = data.get(field_name)
         count = len(value) if isinstance(value, list) else 0
@@ -377,21 +418,6 @@ def _evaluate_json_fields(data: dict[str, Any]) -> list[ReportQualityItem]:
                 if passed
                 else f"{min_count}件以上が望ましい項目です。現在{count}件です。"
             ),
-            evidence=field_name,
-        ))
-
-    for field_name, label in [
-        ("theme_shift_analysis", "テーマ転換分析"),
-        ("supply_demand_regime_analysis", "需給レジーム分析"),
-    ]:
-        value = str(data.get(field_name) or "").strip()
-        passed = bool(value) and "未生成" not in value
-        items.append(ReportQualityItem(
-            category="構造化JSON",
-            check_name=label,
-            passed=passed,
-            severity="medium",
-            message="分析文を確認しました。" if passed else "分析文が未生成または不足しています。",
             evidence=field_name,
         ))
 

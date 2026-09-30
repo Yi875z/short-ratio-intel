@@ -102,6 +102,11 @@ BALANCE_NEGATION_MARKERS = [
     "ではありません", "ではない", "と表現しない", "とは表現しない",
     "誤解", "混同", "と読まない", "とは異なる",
 ]
+# 空売りフローを「残高」と言い換えたときだけ検出する。信用残・貸借・空売り残高報告・
+# オプションの建玉残高は実在するポジション側のデータ名で、むしろ見に行くべきもの
+# （独立レビュー 2026-09-30 #5: 「信用取引残高」「Strike別建玉残高」を high で誤検知していた）。
+BALANCE_FLOW_SUBJECTS = ["空売り", "価格規制", "ショート", "売り方"]
+BALANCE_ALLOWED_DATA_NAMES = ["信用", "貸借", "残高報告", "0.5%", "Strike", "オプション", "先物"]
 
 # 誇張。機械判定が NEUTRAL・確信度 low の日に「ベアからブルへ完全に反転」「流動性津波」と書いていた。
 HYPERBOLE_TERMS = ["完全に", "壊滅", "歴史的", "津波", "確実に", "間違いなく", "必至"]
@@ -212,7 +217,13 @@ def _lint_lines(markdown: str, input_text: str) -> list[ReportLintIssue]:
         in_checklist = any(marker in current_section for marker in CHECKLIST_SECTION_MARKERS)
 
         for term in BALANCE_TERMS:
-            if term in stripped and not any(m in stripped for m in BALANCE_NEGATION_MARKERS):
+            if (
+                term in stripped
+                and not in_checklist
+                and any(s in stripped for s in BALANCE_FLOW_SUBJECTS)
+                and not any(a in stripped for a in BALANCE_ALLOWED_DATA_NAMES)
+                and not any(m in stripped for m in BALANCE_NEGATION_MARKERS)
+            ):
                 issues.append(ReportLintIssue(
                     severity="high",
                     code="flow_as_balance",

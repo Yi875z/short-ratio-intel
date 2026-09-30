@@ -40,11 +40,14 @@ def _complete_json(
     theme_shift_analysis: str = "テーマ転換は条件付きで監視する。",
 ) -> str:
     return json.dumps({
+        "executive_summary": "結論3行。",
         "dominant_market_themes": [{"theme_name": theme_name}],
         "confirmation_conditions": ["a", "b", "c"],
         "false_positive_risks": ["a", "b"],
         "theme_shift_analysis": theme_shift_analysis,
         "supply_demand_regime_analysis": "事実: 判定 NEUTRAL。",
+        "jpx_short_selling_breakdown_analysis": "事実: 規制あり34.7%。",
+        "top_sectors_analysis": [{"sector_name": n} for n in ("a", "b", "c")],
     }, ensure_ascii=False)
 
 

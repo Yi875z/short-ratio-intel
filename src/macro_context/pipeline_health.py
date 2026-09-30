@@ -228,6 +228,72 @@ def check_breakdown_gaps(
     return issues
 
 
+def check_report_gaps(
+    market_dates: list[str],
+    report_dates: list[str],
+    recent_days: int = 10,
+) -> list[HealthIssue]:
+    """空売り比率はあるのに AIレポートが無い日を検出する。
+
+    2026-09-24・09-29 は Gemini の混雑で3モデルとも失敗し、レポートが欠けたまま残った。
+    気づく手段が「GitHub Actions の赤い×」だけだと、翌日以降の成功で埋もれる。
+    過去日のレポートは後から生成できるので high に留め、パイプラインは落とさない。
+    """
+    recent = sorted({d for d in market_dates if d}, reverse=True)[:recent_days]
+    have = set(report_dates)
+    missing = sorted(d for d in recent if d not in have)
+    if not missing:
+        return []
+    return [HealthIssue(
+        severity="high",
+        area="AIレポート",
+        message=f"直近{len(recent)}営業日のうち {len(missing)}日でAIレポートが未生成です（{' / '.join(missing[-3:])}）",
+        action="python -m scripts.fetch_short_ratio --date <日付> --no-theme で再生成",
+    )]
+
+
+def check_institutional_flow_freshness(
+    week_date: Optional[str],
+    today: Optional[date] = None,
+) -> list[HealthIssue]:
+    """姉妹プロジェクト jpx-analysis の投資主体別（週次）が止まっていないかを見る。
+
+    未接続（None）は別の設計判断なので鳴らさない。つながっているのに古い場合だけ鳴らす。
+    2026-09-30 時点で 9/11 週のまま止まっており、レポートが19日前のデータを根拠にしていた。
+    """
+    from src.macro_context.institutional_flow import FLOW_STALE_AFTER_DAYS, flow_age_days
+
+    if not week_date:
+        return []
+    today = today or date.today()
+    age = flow_age_days(week_date, today.isoformat())
+    if age is None or age <= FLOW_STALE_AFTER_DAYS:
+        return []
+    return [HealthIssue(
+        severity="medium",
+        area="投資主体別",
+        message=f"jpx-analysis の週次フローが {week_date} 週のまま（{age}日前）",
+        action="jpx-analysis の週次取得（weekly_fetch.yml）が動いているか確認",
+    )]
+
+
+def check_knowledge_sections(missing: dict[str, list[str]]) -> list[HealthIssue]:
+    """AIに渡すナレッジの章が、Vault 側の見出し変更で抜けていないか。
+
+    2026-09-30 からナレッジは「見出しにこの語を含む章だけ」を入れている
+    （prompt_builder.KNOWLEDGE_SECTIONS）。見出しが変わるとエラーにならず黙って抜けるので鳴らす。
+    """
+    if not missing:
+        return []
+    detail = " / ".join(f"{key}: {', '.join(words)}" for key, words in sorted(missing.items()))
+    return [HealthIssue(
+        severity="medium",
+        area="ナレッジ",
+        message=f"AIに渡す章の見出しが見つかりません（{detail}）",
+        action="Vault の見出しを確認し、prompt_builder.KNOWLEDGE_SECTIONS を合わせる",
+    )]
+
+
 def has_blocking_issues(issues: list[HealthIssue]) -> bool:
     """パイプラインを非ゼロ終了させるべきか。"""
     return any(issue.blocking for issue in issues)
@@ -296,6 +362,33 @@ def collect_health_issues(today: Optional[date] = None) -> list[HealthIssue]:
             issues.extend(check_breakdown_gaps(market_df.to_dict("records")))
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"鮮度点検に失敗（処理は継続）: {exc}")
+
+    try:
+        from src.storage.db import get_ai_report_dates, get_market_short_ratio_df
+
+        market_df = get_market_short_ratio_df()
+        if not market_df.empty:
+            market_dates = [str(d)[:10] for d in market_df["date"].tolist()]
+            issues.extend(check_report_gaps(market_dates, get_ai_report_dates()))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"AIレポート欠落の点検に失敗（処理は継続）: {exc}")
+
+    try:
+        from src.macro_context.institutional_flow import fetch_investor_flow
+
+        snap = fetch_investor_flow((today or date.today()).isoformat())
+        issues.extend(check_institutional_flow_freshness(
+            snap.week_date if snap else None, today,
+        ))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"投資主体別の鮮度点検に失敗（処理は継続）: {exc}")
+
+    try:
+        from src.ai_engine.prompt_builder import missing_knowledge_sections
+
+        issues.extend(check_knowledge_sections(missing_knowledge_sections()))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"ナレッジ章の点検に失敗（処理は継続）: {exc}")
 
     try:
         issues.extend(check_validation_staleness(_read_validation_date(), today))

@@ -42,7 +42,11 @@ from src.macro_context.market_quotes import (
     fetch_quotes,
 )
 from src.macro_context.sector_price import returns_by_sector_code
-from src.analyzer.sector_insight import HIGH_ZONE_MIN_RATIO, build_sector_insights
+from src.analyzer.sector_insight import (
+    HIGH_ZONE_MIN_RATIO,
+    SECTOR_HISTORY_DAYS,
+    build_sector_insights,
+)
 from src.ai_engine.prompt_builder import build_theme_transition_context_for_prompt
 from src.ai_engine.report_quality import (
     build_quality_comparison,
@@ -171,7 +175,12 @@ def main() -> None:
 
     weekly_df = calc.get_weekly_trend(selected_date, days=14)
     market_trend_df = get_market_short_ratio_df(to_date=selected_date)
-    anomalies = AnomalyDetector().detect(today_summary, weekly_df)
+    # 異常値の自己比Zは業種タブ・AIと同じ90日履歴で出す（同じ業種でZが食い違わないように）
+    try:
+        anomaly_history = _cached_sector_history(selected_date)
+    except Exception:
+        anomaly_history = weekly_df
+    anomalies = AnomalyDetector().detect(today_summary, anomaly_history)
     _attach_flow_signals(today_summary, selected_date, calc, market_trend_df)
 
     (
@@ -332,7 +341,7 @@ def _cached_sector_returns(target_date: str):
 
 
 @st.cache_data(ttl=600, show_spinner=False)
-def _cached_sector_history(target_date: str, days: int = 90):
+def _cached_sector_history(target_date: str, days: int = SECTOR_HISTORY_DAYS):
     """Zスコア・パーセンタイル・連続日数に使う長めの業種履歴。
 
     画面が使う weekly_df（14日）ではサンプルが足りないため別に読む。
@@ -1430,9 +1439,12 @@ _COLUMN_LABELS = {
     "zone_key": "ゾーン区分",
     "change_pct": "株価騰落率(%)",
     "quadrant": "象限",
-    "zscore": "Zスコア",
+    "zscore": "自己比Z",
     "percentile": "パーセンタイル",
-    "streak_days": "連続日数",
+    "zscore_samples": "Z算出の営業日数",
+    "z_extreme_streak": "Z±2超の連続日数",
+    "volume_share": "売買代金シェア(%)",
+    "streak_days": "警戒ゾーン連続日数",
     "with_ratio": "規制あり比率(%)",
     "without_ratio": "規制なし比率(%)",
     "without_share": "規制なし構成比(%)",
@@ -1525,6 +1537,8 @@ _SECTOR_TABLE_ORDER = (
     "quadrant",
     "zscore",
     "percentile",
+    "z_extreme_streak",
+    "volume_share",
     "without_share",
     "streak_days",
     "zone_label",

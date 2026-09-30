@@ -176,15 +176,17 @@ def format_quadrant(short_ratio_dod: Optional[float], change_pct: Optional[float
     """空売り比率の前日比と株価騰落率から4象限のラベルを返す。
 
     ⚠️ いずれも候補であり断定ではない。単日の組み合わせで方向を決めつけない。
+    空売り比率の低下は「新規の空売りが減った」ことで、買い戻しの証拠ではない
+    （ナレッジ29 §2）。「踏み上げ」「ショートカバー主導」とは書かず「候補」に留める（2026-09-30）。
     """
     if short_ratio_dod is None or change_pct is None:
         return ""
     if short_ratio_dod > 0 and change_pct > 0:
-        return "比率上昇×株価上昇=売り吸収（踏み上げ・押し目買い優勢の可能性）"
+        return "比率上昇×株価上昇=売り吸収の可能性（空売りの増加を買いがこなした）"
     if short_ratio_dod > 0 and change_pct < 0:
         return "比率上昇×株価下落=方向性売り優勢の可能性"
     if short_ratio_dod < 0 and change_pct > 0:
-        return "比率低下×株価上昇=ショートカバー主導の可能性"
+        return "比率低下×株価上昇=ショートカバー候補（ポジション側データで要確認）"
     if short_ratio_dod < 0 and change_pct < 0:
         return "比率低下×株価下落=売り圧力後退でも買い不在の可能性"
     return ""

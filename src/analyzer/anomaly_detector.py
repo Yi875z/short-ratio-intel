@@ -1,20 +1,23 @@
 """
 異常値検知モジュール
 - 前日比急変（±3pt超）
-- Zスコア逸脱（過去30日から±2σ超）
+- 自己比Zスコア逸脱（その業種の直近60営業日・当日除外から±2σ超）
+
+2026-09-30: Zスコアは sector_insight.self_zscore に一本化した。それまで独自計算で、
+当日を母集団に含め、渡された14日分（実際は約19営業日）で計算していた。同じプロンプトの中で
+業種行の自己比Zと食い違い（例: 保険業 -2.64 と -2.18）、「過去最低水準」とまで書いていた。
 """
 from dataclasses import dataclass
 from typing import Optional
 
-import numpy as np
 import pandas as pd
 from loguru import logger
 
 from config.settings import (
     ANOMALY_DOD_THRESHOLD,
     ANOMALY_ZSCORE_THRESHOLD,
-    HISTORY_DAYS_FOR_ZSCORE,
 )
+from src.analyzer.sector_insight import self_zscore
 
 
 @dataclass
@@ -41,10 +44,11 @@ class AnomalyDetector:
 
         Args:
             today_summary: RatioCalculator.get_today_summary() の結果
-            history_df:    過去30日のデータ DataFrame
+            history_df:    業種履歴（sector_insight.SECTOR_HISTORY_DAYS＝90暦日を渡す）
         """
         events: list[AnomalyEvent] = []
         sector_data = today_summary.get("sector_data", [])
+        target_date = today_summary.get("date")
 
         for s in sector_data:
             # ① 前日比急変
@@ -63,18 +67,21 @@ class AnomalyDetector:
                 ))
 
             # ② Zスコア逸脱
-            z = self._calc_zscore(s["s33_code"], s["short_ratio_pct"], history_df)
+            z, _, samples = self_zscore(
+                history_df, s["s33_code"], s["short_ratio_pct"], target_date
+            )
             if z is not None and abs(z) >= ANOMALY_ZSCORE_THRESHOLD:
                 severity = "high" if abs(z) >= 3.0 else "medium"
-                direction = "過去最高水準" if z > 0 else "過去最低水準"
+                # 「過去最高／最低」は言い過ぎ（Zは平均からの距離であって順位ではない）
+                direction = "自己比で高水準" if z > 0 else "自己比で低水準"
                 events.append(AnomalyEvent(
                     event_type="zscore_outlier",
                     sector_name=s["sector_name"],
                     s33_code=s["s33_code"],
                     current_ratio=s["short_ratio_pct"],
-                    value=z,
+                    value=round(z, 2),
                     severity=severity,
-                    description=f"Zスコア{z:+.2f}（{direction}）",
+                    description=f"自己比Z{z:+.2f}（{direction}・直近{samples}営業日比）",
                 ))
 
             # ③ 絶対値極端
@@ -92,24 +99,3 @@ class AnomalyDetector:
 
         logger.info(f"異常値検知: {len(events)}件")
         return events
-
-    def _calc_zscore(
-        self,
-        s33_code: str,
-        current_ratio: float,
-        history_df: pd.DataFrame,
-    ) -> Optional[float]:
-        """過去30日のZスコアを計算"""
-        if history_df.empty:
-            return None
-
-        sector_hist = history_df[history_df["s33_code"] == s33_code]["short_ratio_pct"]
-        if len(sector_hist) < 5:  # データ不足
-            return None
-
-        mean = sector_hist.mean()
-        std = sector_hist.std()
-        if std == 0:
-            return None
-
-        return round((current_ratio - mean) / std, 2)

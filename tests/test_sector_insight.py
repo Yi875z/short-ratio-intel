@@ -43,7 +43,8 @@ def _today_summary():
 
 def _history(code="3650", ratios=None, end="2026-08-24"):
     """指定業種の履歴。最後の1件が当日（end）になるよう日付を振る。"""
-    ratios = ratios if ratios is not None else [45.0, 46.0, 47.5, 48.5, 49.0, 47.2, 48.0]
+    # 自己比Zの最低サンプル数（20営業日）を満たす長さ。最後の1件（48.0）が当日。
+    ratios = ratios if ratios is not None else [45.0, 46.0, 47.5, 48.5, 49.0, 47.2] * 4 + [48.0]
     dates = pd.date_range(end=end, periods=len(ratios), freq="D")
     return pd.DataFrame({
         "date": dates,
@@ -78,7 +79,7 @@ def test_missing_price_leaves_quadrant_empty_without_raising():
 
 
 def test_zscore_needs_enough_history():
-    """履歴5営業日未満は判定しない（AnomalyDetector._calc_zscore と同じ基準）。"""
+    """履歴20営業日未満は判定しない（異常値検知も同じ self_zscore を使う）。"""
     short_history = _history(ratios=[46.0, 47.0, 48.0])
 
     rows = build_sector_insights(_today_summary(), short_history, {})
@@ -159,13 +160,13 @@ def test_prompt_line_marks_thin_sectors_as_noise():
     summary = {
         "date": "2026-08-24",
         "market_breakdown": {"total_volume_va": 100_000},
-        "sector_data": [_sector("1050", "鉱業", 30.0, -18.9, "🔵 正常レンジ", volume=200)],
+        "sector_data": [_sector("1050", "鉱業", 30.0, -18.9, "🔵 正常レンジ", with_va=40, no_va=20, volume=200)],
     }
     line = format_sector_prompt_line(build_sector_insights(summary, None, {})[0])
 
     assert "売買代金シェア0.2%" in line
     assert "薄商い業種" in line
-    assert "自己比Z N/A（履歴不足）" in line
+    assert "自己比Z N/A（履歴0営業日で不足）" in line
 
 
 def test_prompt_line_without_price_or_dod():

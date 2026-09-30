@@ -143,8 +143,15 @@ def test_fetch_parses_real_format(monkeypatch):
 def test_quadrants_cover_all_four_combinations():
     assert "売り吸収" in format_quadrant(2.5, 1.2)
     assert "方向性売り優勢" in format_quadrant(2.5, -1.2)
-    assert "ショートカバー主導" in format_quadrant(-2.5, 1.2)
+    assert "ショートカバー候補" in format_quadrant(-2.5, 1.2)
     assert "買い不在" in format_quadrant(-2.5, -1.2)
+
+
+def test_quadrant_does_not_assert_short_covering():
+    """比率の低下は新規の空売りが減っただけ。「主導」「踏み上げ」と断定しない（2026-09-30）。"""
+    for dod, pct in [(2.5, 1.2), (-2.5, 1.2)]:
+        label = format_quadrant(dod, pct)
+        assert "主導" not in label and "踏み上げ" not in label
 
 
 def test_quadrant_is_blank_when_either_side_is_missing():
@@ -155,10 +162,10 @@ def test_quadrant_is_blank_when_either_side_is_missing():
 
 
 def test_quadrant_wording_avoids_assertions():
-    """すべて可能性の表現で、断定しない。"""
+    """すべて可能性・候補の表現で、断定しない。"""
     for dod, pct in [(2.5, 1.2), (2.5, -1.2), (-2.5, 1.2), (-2.5, -1.2)]:
         label = format_quadrant(dod, pct)
-        assert "可能性" in label
+        assert "可能性" in label or "候補" in label
 
 
 # ------------------------------------------------------------------

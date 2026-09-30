@@ -385,25 +385,41 @@ def get_market_short_ratio_df(
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
 ) -> pd.DataFrame:
-    """東証全体の空売り比率データをDataFrameで返す。"""
+    """東証全体の空売り比率データをDataFrameで返す。
+
+    `dod_change`（前日比）が保存されていない行は、読むときに系列から計算して埋める
+    （`fill_market_dod`）。JPX公式PDF経路は前日比を持たず None で保存され、upsert も None を
+    書かないため、2026-09 以降は全行が NULL だった（プロンプトの週次推移が全行「N/A」、
+    画面の差分が空、市場全体のショートカバー候補シグナルが発火不能）。
+    """
     engine = get_db_engine()
+
+    # 1日だけ引くときも前営業日と比べられるよう、少し前から読んで最後に絞る
+    lookback_from = None
+    if date:
+        from datetime import date as _date, timedelta as _td
+        lookback_from = (_date.fromisoformat(date) - _td(days=14)).isoformat()
 
     with Session(engine) as session:
         stmt = select(MarketShortRatioDaily).order_by(MarketShortRatioDaily.date)
 
         if date:
-            stmt = stmt.where(MarketShortRatioDaily.date == date)
+            stmt = stmt.where(MarketShortRatioDaily.date >= lookback_from)
+            stmt = stmt.where(MarketShortRatioDaily.date <= date)
         if from_date:
             stmt = stmt.where(MarketShortRatioDaily.date >= from_date)
         if to_date:
             stmt = stmt.where(MarketShortRatioDaily.date <= to_date)
 
         rows = session.execute(stmt).scalars().all()
+        trading_dates = (
+            _breadth_trading_dates(session, rows[0].date, rows[-1].date) if rows else set()
+        )
 
     if not rows:
         return pd.DataFrame()
 
-    return pd.DataFrame([{
+    df = fill_market_dod(pd.DataFrame([{
         "date": r.date,
         "short_ratio_pct": r.short_ratio_pct,
         "dod_change": r.dod_change,
@@ -413,7 +429,67 @@ def get_market_short_ratio_df(
         "total_short_va": r.total_short_va,
         "total_volume_va": r.total_volume_va,
         "breakdown_source": r.breakdown_source,
-    } for r in rows])
+    } for r in rows]), trading_dates)
+
+    if date:
+        df = df[df["date"] == date].reset_index(drop=True)
+    return df
+
+
+def _breadth_trading_dates(session, from_date: str, to_date: str) -> set[str]:
+    """営業日の手がかりとして、騰落銘柄数（J-Quants日足由来）がある日付の集合を返す。
+
+    JPXの取得経路とは独立に作られるので、JPX側が欠けた日を「営業日だった」と判定できる。
+    """
+    try:
+        dates = session.execute(
+            select(MarketBreadthDaily.date)
+            .where(MarketBreadthDaily.date >= from_date)
+            .where(MarketBreadthDaily.date <= to_date)
+            .distinct()
+        ).scalars().all()
+        return set(dates)
+    except Exception as exc:  # noqa: BLE001 手がかりが無くても暦日の上限で判定する
+        logger.warning(f"営業日の手がかり（騰落銘柄数）を読めません: {exc}")
+        return set()
+
+
+# 営業日の手がかりが無いときに「前営業日」とみなす暦日差の上限（金→月＝3日、3連休明け＝4日）
+_DOD_MAX_GAP_DAYS_WITHOUT_CALENDAR = 4
+
+
+def fill_market_dod(df: pd.DataFrame, trading_dates: set[str] | None = None) -> pd.DataFrame:
+    """保存されていない前日比を、系列の1つ前（＝前営業日）との差で埋める。
+
+    PROJECT_RULES「前日比は元の系列の1つ前とだけ比べる」に従い、前営業日が欠けていれば
+    None のまま残す（欠測を詰めて数営業日前と比べた値を「前日比」と呼ばない）。
+    前営業日かどうかは、間に営業日（騰落銘柄数がある日）が挟まっていないかで判定する。
+    手がかりが無い区間は暦日差4日以内だけを隣接とみなす。
+    保存済みの値（スクレイパー経路の前日比）は上書きしない。
+    """
+    if df.empty or "dod_change" not in df.columns:
+        return df
+    from datetime import date as _date
+
+    trading_dates = trading_dates or set()
+    df = df.sort_values("date").reset_index(drop=True).copy()
+    df["dod_change"] = df["dod_change"].astype(object)
+    for i in range(1, len(df)):
+        if pd.notna(df.at[i, "dod_change"]):
+            continue
+        prev_date, cur_date = str(df.at[i - 1, "date"]), str(df.at[i, "date"])
+        prev_ratio, cur_ratio = df.at[i - 1, "short_ratio_pct"], df.at[i, "short_ratio_pct"]
+        if pd.isna(prev_ratio) or pd.isna(cur_ratio):
+            continue
+        if trading_dates and cur_date in trading_dates:
+            skipped = any(prev_date < d < cur_date for d in trading_dates)
+        else:
+            gap = (_date.fromisoformat(cur_date) - _date.fromisoformat(prev_date)).days
+            skipped = gap > _DOD_MAX_GAP_DAYS_WITHOUT_CALENDAR
+        if not skipped:
+            df.at[i, "dod_change"] = round(float(cur_ratio) - float(prev_ratio), 2)
+    df["dod_change"] = df["dod_change"].where(df["dod_change"].notna(), None)
+    return df
 
 
 # ------------------------------------------------------------------

@@ -4,7 +4,8 @@
 > 本ファイルへの参照のみを記載し、ルール本文を複製しないこと。
 > 新しいAIエージェントを導入する場合も、そのエージェントの規約ファイルから本ファイルを参照させるだけでよい。
 
-- 最終更新: 2026-09-03（JPXの公開範囲を実測し直して訂正＝一覧は当月全営業日・アーカイブは過去12ヶ月全営業日。内訳欠測の検知2経路化、breakdown_source 列の追加。テスト基準を466件へ更新）
+- 最終更新: 2026-09-30（既定モデルを 3.6 へ戻し 3.8 は不採用。全モデル 503 時の巡回やり直しと、Worker 重複起動のガードを追加。テスト基準を475件へ更新）
+- 前回: 2026-09-03（JPXの公開範囲を実測し直して訂正＝一覧は当月全営業日・アーカイブは過去12ヶ月全営業日。内訳欠測の検知2経路化、breakdown_source 列の追加）
 - 対象プロジェクト: short-ratio-intel（JPX空売り比率の取得・分析・Gemini AIレポート生成 Streamlit アプリ）
 - 公開区分: L3（コードは一般公開。ナレッジ原本・Secrets・個人データはリポジトリ外で非公開管理）
 
@@ -75,7 +76,7 @@
 - **技術スタック**: Python 3.12（Streamlit Community Cloud 固定。新しすぎる Python は固定依存の wheel が無くビルド失敗する）/
   pandas 2.2.0 / SQLAlchemy 2.0.27 / psycopg2-binary / pydantic 2.6.0 / loguru / feedparser / Streamlit / Gemini API / pytest
 - **起動コマンド**: `streamlit run app/streamlit_app.py`（本番は Streamlit Community Cloud・bcrypt ログイン付き。main へ push すると自動再デプロイ）
-- **テストコマンド**: `pytest`（基準: 全466件パス。2026-09-03 実測 35秒。内訳欠測・アーカイブ取得・出所記録の回帰テストを追加）
+- **テストコマンド**: `pytest`（基準: 全475件パス。2026-09-30 実測 24秒。巡回やり直し・時間予算・重複起動ガードの回帰テストを追加）
 - **DBスキーマの正**: `src/storage/db.py` の `get_engine()` が `DATABASE_URL` ありで Supabase(PostgreSQL)、無しでローカル SQLite に切替。
   スキーマ定義の正本ファイルは未確認（`src/storage/` 配下を参照）
 - **データソースと取得条件**:
@@ -131,12 +132,18 @@
     したがって空売り比率の取得元は今後も JPX 公開PDF が正であり、業種別騰落率は nikkei225jp.com のまま。
     このステップは **fail-soft**（失敗してもパイプラインを止めない）。空売り比率の取得0件とは扱いが違う
 - **AIモデル（Gemini）の扱い**:
-  - 既定モデルは `gemini-3.7-flash`（2026-08-25〜、**試験運用中**）。失敗時は 3.6 → 3.5 へ自動退避する。
-    3.7 は速い日で 85.5秒だが遅い日は 600秒超に化ける実績があるため、恒久採用の判断は
-    数日ぶんの `check_gemini_model` の記録と `ai_reports.model_used` の退避頻度を見て行う。
-    退避が頻発するようなら `GEMINI_MODEL_DEFAULT` を 3.6 に戻す（1行の変更で済む）。
-    **`GEMINI_REQUEST_TIMEOUT_SEC` を伸ばすときは `daily_fetch.yml` の `timeout-minutes` も必ず伸ばす**
-    （job が先に切れると退避先へ到達せずレポートが欠落する。テストで突き合わせ済み）
+  - 既定モデルは `gemini-3.6-flash`（2026-09-30〜）。失敗時は 3.5 → 3.7 へ自動退避する。
+    並びは `ai_reports.model_used` の実績順。8/25〜9/29 に先頭へ置いた 3.7 が書けたのは
+    22営業日中6日で、規則「退避が頻発するなら戻す」に該当したため 3.6 へ戻した。
+    **3.8 は不採用**。本番同等の入力（system 約6.9万字＋user 約1.6万字）で 9/26 に2回・9/30 に1回、
+    いずれも数秒で 503 high demand。小さな入力なら通る（JPX_Analysis_System では採用候補）ので、
+    「短文で通った」を根拠に採用しないこと。再判定は `check_gemini_model` を夜に1回だけ流す。
+  - **全モデルが 503 で落ちたら、定時パイプラインに限り5分待って巡回し直す**（最大3巡、2巡目以降は各モデル1回）。
+    9/24・9/29 は3モデル×3回を約3分で撃ち尽くして欠落した。混雑は分〜時間単位で引く。
+    AI生成全体は `GEMINI_TOTAL_BUDGET_SEC`（30分）に収め、次の1リクエストで予算を超えるなら始めない。
+    Streamlit の手動生成は1巡のまま（画面で数分待たせない）。
+    **`GEMINI_TOTAL_BUDGET_SEC` や `GEMINI_REQUEST_TIMEOUT_SEC` を伸ばすときは `daily_fetch.yml` の
+    fetch ジョブの `timeout-minutes` も必ず伸ばす**（job が先に切れると退避先へ到達せずレポートが欠落する。テストで突き合わせ済み）
   - モデル指定の正本は `config/settings.py` の `GEMINI_MODEL_DEFAULT` **1箇所だけ**。
     workflow には env を置かない（二重管理事故の防止。2026-08-25 に削除）。
     環境変数での上書きは緊急避難用に残すが、効いていれば起動ログと Streamlit 画面に警告が出る。
@@ -165,6 +172,12 @@
   GitHub の schedule は84分〜10時間遅延する実績があり、時刻の正本は Worker 側の
   `scheduler/src/index.js` の `SCHEDULE` 配列（JPX_Analysis_System リポジトリ）にJSTで置く。
   ここを書き換えても本番の起動時刻は変わらないので注意すること。
+  **両ワークフローの先頭に `guard` ジョブがある**（2026-09-30）。Worker は実行済みでも追い付き時刻
+  （分の1の位が7）に撃ち直すことがあり（9/28 は13回・9/29 は7回。Worker 側の原因は未確認）、
+  起動のたびに Gemini を最大9回呼んで枠を削っていた。`source=worker` の起動だけ、定時以降に
+  実行があれば本処理をスキップする。人の手動実行（既定 `manual`）は常に通す。
+  **Worker が short-ratio の2ジョブに `inputs: { source: "worker" }` を渡していないとガードは効かない**。
+  デプロイ順はワークフロー（本リポジトリの push）→ Worker（逆だと未知の入力で 422 になり起動できない）。
   - 日本: `daily_fetch.yml` 平日19:07 JST（`scripts/fetch_short_ratio.py`）。Gemini AIレポートあり。
   - 米国: `us_daily_fetch.yml` 平日08:37 JST（`scripts/fetch_us_short_flow.py`）。
     FINRA公開が米東部18:00＝JST翌朝07:00(夏)/08:00(冬)のため朝に置く。ルールベース生成でGeminiは呼ばない。

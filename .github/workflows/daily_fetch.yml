@@ -72,8 +72,15 @@ jobs:
             boundary=$((boundary - 86400))
           fi
           since=$(date -u -d "@$boundary" +%Y-%m-%dT%H:%M:%SZ)
-          n=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/daily_fetch.yml/runs?branch=main&per_page=30" \
-                --jq "[.workflow_runs[] | select(.created_at >= \"${since}\") | select(.id != ${GITHUB_RUN_ID})] | length")
+          # 自分より前に作られた run だけを数える（!= だと同時に起動した2本が互いを見て両方止まる）。
+          # 照会自体が失敗したら「実行する」側に倒す。guard が落ちると定時の本処理ごと消えるため
+          # （Worker も定時ちょうどは照会失敗でも撃つ側に倒している）。
+          if ! n=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/daily_fetch.yml/runs?branch=main&per_page=30" \
+                --jq "[.workflow_runs[] | select(.created_at >= \"${since}\") | select(.id < ${GITHUB_RUN_ID})] | length"); then
+            echo "::warning::実行履歴の照会に失敗。重複判定せずに実行する"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           echo "基準時刻 ${since} 以降の既存実行: ${n} 件"
           if [ "$n" -gt 0 ]; then
             echo "すでに起動済みのため本処理をスキップする"
@@ -84,7 +91,8 @@ jobs:
 
   fetch:
     needs: guard
-    if: needs.guard.outputs.skip != 'true'
+    # guard が失敗しても本処理は走らせる（needs の既定は success() が暗黙に付き、スキップされてしまう）
+    if: ${{ !cancelled() && needs.guard.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
     # AIレポート生成の最悪ケースに合わせる。
     # config/settings.py の GEMINI_TOTAL_BUDGET_SEC(30分) が AI 生成全体の上限で、
@@ -147,6 +155,11 @@ jobs:
             fetch-only) ARGS="$ARGS --no-theme --no-report" ;;
             no-news)    ARGS="$ARGS --no-news" ;;
           esac
+          # 定時起動（Worker）は保存済みのレポートを作り直さない。祝日の起動が前営業日の
+          # レポートを退避モデルで上書きしていたため（人の手動実行には付けない）。
+          if [ "${{ inputs.source }}" = "worker" ]; then
+            ARGS="$ARGS --skip-existing-report"
+          fi
           echo "Mode: $MODE"
           echo "Date: ${DATE_ARG:-(auto)}"
           echo "TZ:   $TZ"; date

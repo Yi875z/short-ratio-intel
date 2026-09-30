@@ -47,6 +47,7 @@ from loguru import logger
 from config.settings import GEMINI_MODEL, GEMINI_PIPELINE_MAX_ROUNDS, SLACK_WEBHOOK_URL
 from src.ai_engine.gemini_client import GeminiReportGenerator
 from src.analyzer.anomaly_detector import AnomalyDetector
+from src.analyzer.sector_insight import SECTOR_HISTORY_DAYS
 from src.analyzer.market_breadth import (
     compute_all_breadth,
     compute_topix_change,
@@ -68,6 +69,7 @@ from src.macro_context.pipeline_health import (
     has_blocking_issues,
 )
 from src.storage.db import (
+    get_ai_report,
     get_latest_date,
     get_market_short_ratio_df,
     save_ai_report,
@@ -255,7 +257,9 @@ def _prepare_analysis(report_date: str):
     calc = RatioCalculator()
     today_summary = calc.get_today_summary(report_date)
     weekly_df = calc.get_weekly_trend(report_date, days=14)
-    anomalies = AnomalyDetector().detect(today_summary, weekly_df)
+    # 異常値の自己比Zは画面・業種行と同じ90日履歴で出す（14日だと同じ業種でZが食い違う）
+    sector_history = calc.get_weekly_trend(report_date, days=SECTOR_HISTORY_DAYS)
+    anomalies = AnomalyDetector().detect(today_summary, sector_history)
     market_trend_df = get_market_short_ratio_df(to_date=report_date)
     return calc, today_summary, weekly_df, anomalies, market_trend_df
 
@@ -399,7 +403,15 @@ def run(args: argparse.Namespace) -> int:
         if not args.no_theme:
             theme_count = _step_theme(report_date, today_summary, auto_fetch_news)
 
-        if not args.no_report:
+        skip_existing = getattr(args, "skip_existing_report", False) and get_ai_report(report_date)
+        if skip_existing:
+            # 定時の起動（Worker）は、その日のレポートが既にあれば作り直さない。
+            # 祝日にも Worker は起動し、DB最新日＝前営業日のレポートを退避モデルで上書きしていた
+            # （9/18 のレポートが 9/23 に 3.5 で作り直された。独立レビュー #8）。
+            # 人の手動実行はこのフラグを付けないので、再生成したいときは従来どおりできる。
+            logger.info(f"{report_date} のAIレポートは保存済みのため再生成しない（--skip-existing-report）")
+            used_model = "（既存を維持）"
+        elif not args.no_report:
             report_chars, report_obj, used_model = _step_report(
                 report_date, today_summary, weekly_df, anomalies, auto_fetch_news
             )
@@ -466,6 +478,11 @@ def main() -> None:
     )
     parser.add_argument("--no-theme", action="store_true", help="市場テーマ判定をスキップ")
     parser.add_argument("--no-report", action="store_true", help="AIレポート生成をスキップ")
+    parser.add_argument(
+        "--skip-existing-report",
+        action="store_true",
+        help="対象日のAIレポートが保存済みなら生成しない（定時起動用。手動の再生成には付けない）",
+    )
     parser.add_argument(
         "--no-news",
         action="store_true",

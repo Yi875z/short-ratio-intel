@@ -44,7 +44,10 @@ GitHub Actions（平日19:00 JST）           Streamlit Community Cloud（常時
 
 ### 自動取得（GitHub Actions）
 
-- 定義: `.github/workflows/daily_fetch.yml`。cron `0 10 * * 1-5`（= 平日19:00 JST）。
+- 定義: `.github/workflows/daily_fetch.yml`。`schedule:` は持たない（2026-09-02 削除）。起動は Cloudflare Worker
+  `jpx-report-scheduler`（JPX_Analysis_System リポジトリの `scheduler/`）が平日 19:07 JST に workflow_dispatch する。
+  Worker 起動は `source=worker` を渡し、先頭の `guard` ジョブが重複を弾き、保存済みのレポートは作り直さない
+  （`--skip-existing-report`）。手動実行（既定 `manual`）は常に通り、レポートも再生成する。
 - 手動実行: GitHub の Actions タブ →「空売り比率 定時取得・AIレポート生成」→ Run workflow。モードは `full`（取得＋テーマ＋レポート）/ `fetch-only` / `no-news` を選べる。スマホからも実行可。
 - **⚠️ `gh workflow run` をループ/自動リトライで叩かないこと。** 一時的な500でも単発・手動で1回ずつ。過去に別プロジェクトでループ誤記により本番ワークフローが連続実行・大量メールの事故あり。
 
@@ -203,8 +206,9 @@ Flash 系は無料枠が1日20リクエスト（20 RPD）。レポート再生�
 この 20 RPD は `GenerateRequestsPerDayPerProjectPerModel-FreeTier`、つまり **モデル単位** の枠。
 枯渇しても別モデルは無傷の別枠を持つので、**24時間待つ必要はなく別モデルへ移れば即復旧**する。
 `gemini_client.py` は日次枠の 429 を検知したら待たずに `GEMINI_FALLBACK_MODELS`
-（既定 `gemini-3.6-flash,gemini-3.5-flash`）へ自動で切り替えるので、通常は手作業不要。
-恒久的に既定を変える場合のみ `GEMINI_MODEL` を書き換える。
+（既定 `gemini-3.5-flash,gemini-3.7-flash`。先頭は `gemini-3.6-flash`）へ自動で切り替えるので、通常は手作業不要。
+恒久的に既定を変える場合のみ `config/settings.py` の `GEMINI_MODEL_DEFAULT` を書き換える。
+全モデルが 503（混雑）のときは、定時実行に限り5分待って最大3巡する。1回の定時実行で最大15リクエスト。
 クォータのリセットは太平洋時間の深夜＝**JST 16:00 が日付境界**。
 
 #### モデル指定の正本は `config/settings.py` の1箇所だけ

@@ -3,6 +3,7 @@ Geminiレポートの過剰断定・未確認データ断定を検出する軽�
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 
@@ -92,13 +93,80 @@ CHECKLIST_SECTION_MARKERS = [
 ]
 
 
+# ── 2026-09-30 追加。いずれも同日のレポートで実際に出た表現 ──
+# 空売り比率は日次フロー。残高・建玉の語彙で書くと「売りが溜まっている」と誤読させる。
+# （例:「価格規制ありの残高が高水準で残っており」）
+BALANCE_TERMS = ["残高", "建玉"]
+# 否定・注意書きの文脈なら許す（冒頭注記「空売り残高・建玉ではありません」等）。
+BALANCE_NEGATION_MARKERS = [
+    "ではありません", "ではない", "と表現しない", "とは表現しない",
+    "誤解", "混同", "と読まない", "とは異なる",
+]
+
+# 誇張。機械判定が NEUTRAL・確信度 low の日に「ベアからブルへ完全に反転」「流動性津波」と書いていた。
+HYPERBOLE_TERMS = ["完全に", "壊滅", "歴史的", "津波", "確実に", "間違いなく", "必至"]
+# 「〜と断定しない」「〜とは限らない」のような否定の文脈なら許す
+HYPERBOLE_NEGATION_MARKERS = ["断定しない", "断定できない", "断定は避け", "禁止", "ではない", "とは限らない", "避ける"]
+
+# 入力に無い数値を「想定」で補う（例:「前日（36.5%想定）」）。
+FABRICATED_NUMBER_PATTERN = re.compile(
+    r"\d[\d,.]*\s*(?:%|％|pt|円|兆円|億円|百万円)?\s*(?:想定|と仮定|と推定)"
+)
+
+# テクニカル指標は入力に無い。売買の撤退ラインを作る材料になる（例:「25日移動平均線割れで撤退」）。
+# DATA_TERMS より厳しく扱い、「場合」「条件」などの言い回しでは許さない。
+TECHNICAL_TERMS = ["移動平均", "25日線", "75日線", "RSI", "MACD", "ボリンジャー", "一目均衡表"]
+
+# 機械判定の判定名を入力から拾う（例:「判定: THIN_MARKET（薄商い…） / 確信度: low」）
+REGIME_PATTERN = re.compile(r"判定:\s*([A-Z_\-]+)（([^）]+)）")
+THIN_MARKET_CONTRADICTIONS = ["売り圧力が強", "売り圧力の強", "売り圧力が高ま", "売り圧力が増"]
+
+# 投資主体別データに【鮮度注意】が付いた日に、それを裏付けとして使った文。
+STALE_FLOW_MARKER = "【鮮度注意】"
+FLOW_SUBJECT_TERMS = ["投資主体", "海外投資家", "主体別"]
+EVIDENCE_TERMS = ["裏付け", "整合的", "一致している", "確認できる"]
+
+
 def lint_report_markdown(
     markdown: str,
     input_text: str = "",
 ) -> list[ReportLintIssue]:
     """レポート本文に危険な表現がないか確認する。"""
+    issues = _lint_lines(markdown, input_text)
+    issues += _lint_regime_consistency(markdown, input_text)
+    return issues
+
+
+def _lint_regime_consistency(markdown: str, input_text: str) -> list[ReportLintIssue]:
+    """入力の機械判定とレポート本文が食い違っていないか（画面とレポートで結論が割れるのを防ぐ）。"""
+    matched = REGIME_PATTERN.search(input_text or "")
+    if not matched:
+        return []
+    code, label = matched.group(1), matched.group(2)
+    issues: list[ReportLintIssue] = []
+    if code not in markdown and label not in markdown:
+        issues.append(ReportLintIssue(
+            severity="medium",
+            code="regime_not_referenced",
+            message=f"機械判定レジーム（{code}／{label}）への言及がありません",
+            line="",
+        ))
+    if code == "THIN_MARKET":
+        for line in markdown.splitlines():
+            if any(term in line for term in THIN_MARKET_CONTRADICTIONS):
+                issues.append(ReportLintIssue(
+                    severity="high",
+                    code="regime_contradiction",
+                    message="機械判定は THIN_MARKET（見かけの高比率）なのに売り圧力の強さを主張しています",
+                    line=line.strip(),
+                ))
+    return issues
+
+
+def _lint_lines(markdown: str, input_text: str) -> list[ReportLintIssue]:
     issues: list[ReportLintIssue] = []
     current_section = ""
+    stale_flow = STALE_FLOW_MARKER in (input_text or "")
 
     for line in markdown.splitlines():
         stripped = line.strip()
@@ -140,5 +208,59 @@ def lint_report_markdown(
                     line=stripped,
                 )
             )
+
+        in_checklist = any(marker in current_section for marker in CHECKLIST_SECTION_MARKERS)
+
+        for term in BALANCE_TERMS:
+            if term in stripped and not any(m in stripped for m in BALANCE_NEGATION_MARKERS):
+                issues.append(ReportLintIssue(
+                    severity="high",
+                    code="flow_as_balance",
+                    message=f"日次フローを残高・建玉の語彙で記述: {term}",
+                    line=stripped,
+                ))
+                break
+
+        for term in HYPERBOLE_TERMS:
+            if term in stripped and not any(m in stripped for m in HYPERBOLE_NEGATION_MARKERS):
+                issues.append(ReportLintIssue(
+                    severity="medium",
+                    code="hyperbole",
+                    message=f"誇張・過剰確信の表現: {term}",
+                    line=stripped,
+                ))
+                break
+
+        if FABRICATED_NUMBER_PATTERN.search(stripped):
+            issues.append(ReportLintIssue(
+                severity="high",
+                code="fabricated_number",
+                message="入力に無い数値を「想定・仮定」で補っている可能性",
+                line=stripped,
+            ))
+
+        if not in_checklist:
+            for term in TECHNICAL_TERMS:
+                if term in stripped and term not in (input_text or ""):
+                    issues.append(ReportLintIssue(
+                        severity="medium",
+                        code="technical_not_in_input",
+                        message=f"入力に無いテクニカル指標に依拠: {term}",
+                        line=stripped,
+                    ))
+                    break
+
+        if (
+            stale_flow
+            and any(t in stripped for t in FLOW_SUBJECT_TERMS)
+            and any(t in stripped for t in EVIDENCE_TERMS)
+            and "未確認" not in stripped
+        ):
+            issues.append(ReportLintIssue(
+                severity="medium",
+                code="stale_flow_as_evidence",
+                message="鮮度注意の付いた投資主体別データを裏付けに使っています",
+                line=stripped,
+            ))
 
     return issues

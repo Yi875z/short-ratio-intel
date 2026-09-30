@@ -18,6 +18,22 @@ from loguru import logger
 
 from config.settings import MARKET_NEWS_TIMEOUT_SECONDS
 
+# 週次データが「古すぎる」とみなす日数（分析日 − 週の基準日）。
+# JPX の投資部門別売買は翌週の第4営業日（通常木曜）公表なので、正常なら 6〜13日に収まる。
+# これを超えたら jpx-analysis 側の更新が止まっている可能性が高い。
+# 2026-09-30 のレポートは 19日前（9/11 週）のデータを「裏付けている」の根拠に使っていた。
+FLOW_STALE_AFTER_DAYS = 14
+
+
+def flow_age_days(week_date: str, target_date: str) -> int | None:
+    """週の基準日から分析日までの日数。日付が読めなければ None。"""
+    from datetime import date
+
+    try:
+        return (date.fromisoformat(target_date[:10]) - date.fromisoformat(week_date[:10])).days
+    except (TypeError, ValueError):
+        return None
+
 
 def _iter_secret_items():
     """st.secrets を (key, value) で走査（トップレベル＋1段ネストの [section] 内も）。"""
@@ -218,10 +234,18 @@ def build_institutional_flow_prompt_block(target_date: str) -> str:
             "【機関フロー（投資主体別・週次）】\n"
             "- データ未接続。投資主体別の裏付けは未確認として扱い、Pro Intentは断定しない。"
         )
+    age = flow_age_days(snap.week_date, target_date)
     lines = [
         f"【機関フロー（投資主体別・週次／{snap.week_date}時点・単位:億円・jpx-analysis）】",
         "- 現物net / 先物net / 合算。プラス=買い越し、マイナス=売り越し。",
     ]
+    if age is not None and age > FLOW_STALE_AFTER_DAYS:
+        # 日付を出すだけでは AI は古さを割り引かない（9/30 に 19日前のデータを裏付けに使った）。
+        lines.append(
+            f"- 【鮮度注意】このデータは分析日の{age}日前の週で、通常の公表遅れ（6〜13日）より古い。"
+            "当日・今週の需給の裏付けには使わないこと。`institutional_flow_alignment` には"
+            "「最新週が未更新のため主体別の裏付けは未確認」と明記し、参考として週の日付つきで触れるに留める。"
+        )
     for f in snap.flows:
         twin = "（現物・先物とも買い越し=ツインエンジン）" if f.is_twin_engine else ""
         lines.append(

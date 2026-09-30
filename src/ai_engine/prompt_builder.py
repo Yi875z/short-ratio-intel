@@ -2,6 +2,8 @@
 Gemini API へのプロンプトを動的に構築するモジュール
 """
 import json
+import re
+
 from loguru import logger
 from src.analyzer.sector_insight import build_sector_insights, format_sector_prompt_line
 from config.settings import CURRENT_MACRO_CONTEXT, MARKET_NEWS_AUTO_FETCH
@@ -42,21 +44,51 @@ from src.storage.db import (
 )
 
 
-# 主要ナレッジ4種（global_macro / jpx_micro / options_gex / quant_psych）を
-# システムプロンプトへ埋め込むときの1ファイル上限。Vault増補でプロンプトが
-# 無自覚に肥大し、Gemini入力上限(250K TPM)やlost-in-the-middleを招くのを防ぐ。
-_KNOWLEDGE_CLIP_CHARS = 12000
+# ── ナレッジの注入範囲（2026-09-30 に絞り込み）──────────────────────
+# 以前は Vault のナレッジ7種を丸ごと（1ファイル最大1.2万字）入れており、system が約6.9万字あった。
+# うち空売り比率の分析に効くのは3割程度で、残りは朝の相場レポート用の出力仕様・
+# ダッシュボードのタブ構成・GEX解説（入力にGEXは無い）・ChatGPT Project の運用定型だった。
+# 大きな入力は混雑時に 503 で切られやすく（3.8 は本番入力で3回連続 503、小さな入力なら即答）、
+# 焦点もぼやける。そこで「見出しにこの語を含む章だけ」を入れる。
+# Vault 側で見出しが変わると黙って抜けるので、見つからない語は pipeline_health が鳴らす。
+KNOWLEDGE_SECTIONS: dict[str, list[str]] = {
+    "project_protocol": [
+        "事実・推測・シナリオの分離",
+        "JPX分析の禁止・推奨表現",
+        "投資主体別の時間差ルール",
+        "テクニカル・クオンツ分析ルール",
+        "資金フロー・四半期テーマ転換監視ルール",
+    ],
+    # 見出しは Vault 7/6 版と 9/13 版（NEO-OS-2.3.0）の両方に当たる語を選んでいる
+    "jpx_micro": [
+        "現行の市場ルール",                 # 空売り価格規制・指数リバランス・信用規制の定義
+        "JPX空売り比率・価格規制内訳",
+        "Market Makers / Arbitrage",        # 価格規制なし＝裁定・ヘッジの主体
+        "JPX投資主体別",
+    ],
+    "user_rules": [
+        "3.3 JPX需給",
+        "3.5 空売り比率",
+        "SQ・MSQ週の追加ルール",
+        "AI・半導体テーマの確認ルール",
+        "過去の失敗から固定する再発防止ルール",
+        "データ取得不能時の回答ルール",
+    ],
+}
+_KNOWLEDGE_SECTION_LIMIT = 6000      # 1ナレッジから入れる上限（抽出後）
+_KNOWLEDGE_FALLBACK_CLIP = 3000      # 見出しが1つも当たらないときの退避（丸ごとには戻さない）
 
 
 def build_system_prompt() -> str:
     """
-    NEOグランドマスター人格 + ナレッジ + 出力スキーマを組み合わせた
+    NEOグランドマスター人格 + ナレッジ（関係する章だけ）+ 出力スキーマを組み合わせた
     システムプロンプトを構築する。
     """
     knowledge = load_effective_knowledge()
     thresholds = SIGNAL_THRESHOLDS
+    # 空白・改行なしの JSON にする（indent=2 だと約1.4倍の字数になる）
     schema_json = json.dumps(
-        ReadingReport.model_json_schema(), ensure_ascii=False, indent=2
+        ReadingReport.model_json_schema(), ensure_ascii=False, separators=(",", ":")
     )
 
     prompt = f"""
@@ -78,40 +110,25 @@ def build_system_prompt() -> str:
 
 ---
 
-## ナレッジベース
+## ナレッジベース（空売り比率の分析に関係する章の抜粋）
 
-### Project Operating Protocol（最上位運用ルール・分析ルール抜粋）
+### 空売り集計（日次フロー）のプロの読み方（本アプリ専用・最優先で参照）
+{_clip(knowledge.get('short_flow_pro', ''), _KNOWLEDGE_SECTION_LIMIT)}
+
+---
+
+### Project Operating Protocol（分析ルール抜粋）
 {_extract_protocol_digest(knowledge.get('project_protocol', ''))}
 
 ---
 
-### Market Preview Output Spec（市場テーマ調査・出力仕様）
-{_clip(knowledge.get('market_preview_spec', ''), 12000)}
+### JPX Micro Flows（市場ルール・空売り内訳・投資主体別）
+{_extract_sections(knowledge.get('jpx_micro', ''), KNOWLEDGE_SECTIONS['jpx_micro'])}
 
 ---
 
-### Global Macro Dynamics（マクロ・為替・時間軸）
-{_clip(knowledge.get('global_macro', ''), _KNOWLEDGE_CLIP_CHARS)}
-
----
-
-### JPX Micro Flows（日本株・需給分析）
-{_clip(knowledge.get('jpx_micro', ''), _KNOWLEDGE_CLIP_CHARS)}
-
----
-
-### Options & GEX Master（オプション・ガンマ解析）
-{_clip(knowledge.get('options_gex', ''), _KNOWLEDGE_CLIP_CHARS)}
-
----
-
-### Quant & Psychology（クオンツ・心理学）
-{_clip(knowledge.get('quant_psych', ''), _KNOWLEDGE_CLIP_CHARS)}
-
----
-
-### User Investment Operating Rules（ユーザー固有・投資分析運用ルール）
-{_clip(knowledge.get('user_rules', ''), 9000)}
+### User Investment Operating Rules（ユーザー固有ルール抜粋）
+{_extract_sections(knowledge.get('user_rules', ''), KNOWLEDGE_SECTIONS['user_rules'])}
 
 ---
 
@@ -139,18 +156,21 @@ Markdownのコードブロック（```）は使わず、純粋なJSONのみを�
   未取得の入力を要する判断（例: 騰落銘柄数が未取得の日に「全面安」と断定する）は行わない
 - `supply_demand_regime_analysis` には、機械判定レジームの解釈を、比率・絶対額・流動性・価格反応の
   4つに分けて書く。`regime`（リスクオン/リスクオフ/レンジ）とは別軸なので混同しない
-- 入力にない日経平均水準・確率・個別銘柄の断定は出力しない
-- 「必ず」「持続不可能」「反発確率○%」などの過剰確信表現を避け、条件付きで表現する
-- `investment_guardrails` には、売買推奨ではないこと、空売り比率単独で判断しないこと、反証条件を確認することを必ず入れる
+- 入力にない日経平均水準・確率・個別銘柄・前日値の断定は出力しない。入力に無い数値を「想定」「推定」で補わない
+- 移動平均線・RSI などテクニカル指標は入力に無い。売買の撤退ラインや目標水準を作らない（売買推奨ではない）
+- 「必ず」「完全に」「確実」「壊滅的」「歴史的」「持続不可能」「反発確率○%」などの過剰確信・誇張表現を避け、条件付きで表現する
+- 機械判定の `confidence` が low の日は、結論も「〜の可能性」「〜寄り」に留め、「反転した」「決着した」と書かない
+- 空売り比率の低下は「新規の空売りが減った」ことであり、それだけで「買い戻し（ショートカバー）が起きた」「ショートポジションが解消された」とは言えない。
+  空売り比率から建玉・残高・ポジションの量は分からない。ショートカバーは株価上昇と組み合わせた「候補」として書く
+- 各欄の字数上限（スキーマの description）を守る。同じ事実を複数の欄で繰り返さない
 - `confirmation_conditions` には、翌営業日以降に確認すべき再現性・継続性の条件を具体的に書く
-- `false_positive_risks` には、ヘッジ・裁定混入、その他（33業種外）、単日ノイズなどの誤判定要因を入れる
-- `additional_data_to_check` には、株価・出来高・先物・オプション・主体別売買・信用残など、追加確認データを入れる
-- `dominant_market_themes` には、入力された市場テーマ候補の上位1〜3件を根拠付きで入れる
+- `false_positive_risks` には、この解釈が外れる条件（反証条件）と、ヘッジ・裁定混入、その他（33業種外）、指数イベント、単日ノイズなどの誤判定要因を入れる
+- `dominant_market_themes` には、入力された市場テーマ候補の上位1〜3件を根拠付きで入れ、`short_ratio_alignment` に関連業種の需給と整合するかを書く
 - `theme_shift_analysis` には、前提テーマが変わりつつあるかを条件付きで書く
-- `theme_sector_alignment` には、主要テーマと業種別空売り比率が整合するか、整合しないかを明記する
 - `unverified_market_data` には、数値未取得・未確認の市場データを入れる
 - `executive_summary` には、レポート全体の結論を3行以内で書く（何が起きたか・需給の主因・翌営業日の焦点）
 - `regime` には「リスクオン」「リスクオフ」「レンジ・様子見」のいずれか1つだけを書く
+- 投資判断ガードレール（売買推奨ではない等）は表示側で固定文を付けるので、出力しなくてよい
 - `dominant_market_themes` の各テーマの `flow_classification` には資金フロー区分を1つ記す:
   Confirmed（JPX・財務省・CFTC等の公式データで確認済み）/ Price-Implied（価格・出来高・相対強度から示唆）/
   Scheduled（SQ・指数リバランス・配当等の予定された機械的フロー）/ Narrative（ニュース・期待先行）/ Unconfirmed（未確認）。
@@ -158,9 +178,9 @@ Markdownのコードブロック（```）は使わず、純粋なJSONのみを�
 
 ## 事実・解釈・推測のラベル分離（運用プロトコル準拠）
 
-- 長文の分析フィールド（market_overall_summary / jpx_short_selling_breakdown_analysis / price_restriction_signal /
-  other_category_impact / event_calendar_context / weekly_trend_analysis / theme_shift_analysis /
-  institutional_flow_alignment / pro_intent）では、文の先頭に「事実:」「解釈:」「推測:」のラベルを付けて確度を分離する
+- 長文の分析フィールド（supply_demand_regime_analysis / jpx_short_selling_breakdown_analysis /
+  event_calendar_context / theme_shift_analysis / institutional_flow_alignment）では、
+  文の先頭に「事実:」「解釈:」「推測:」のラベルを付けて確度を分離する
 - 「事実:」は入力データ・報道ベースで確認できる内容のみ。「解釈:」はデータから合理的に読める意味。
   「推測:」は可能性の指摘であり、反証条件をセットで書く
 
@@ -186,6 +206,9 @@ Markdownのコードブロック（```）は使わず、純粋なJSONのみを�
     カバーが一巡すると上昇の勢いが続かない可能性を併記する。
   - 比率低下 × 株価下落 = 売り圧力は後退しているが買いが不在の可能性。売り方の撤退を強気材料と即断しない。
 - 株価が「N/A」の業種は騰落率を取得できていない。その業種では象限を断定せず、比率のみの解釈に留める。
+- 業種ごとに空売り比率の平常水準は構造的に違う。「高い／低い」は固定ゾーンではなく**自己比Z・パーセンタイル**で判断し、ゾーンは目安に留める。
+- 「薄商い業種」と書かれた業種（売買代金シェアが小さい）の単日の比率変化はノイズとして扱い、注目業種の主役にしない。
+  注目業種は、売買代金シェアの大きい業種と、自己比Zが極端な業種・警戒ゾーンが連続している業種を優先する。
 - 主要テーマに該当する業種（半導体なら電気機器・精密機器など）は、必ずこの4象限の言葉で説明する。
 
 ## シグナル履歴の解釈ルール
@@ -199,7 +222,7 @@ Markdownのコードブロック（```）は使わず、純粋なJSONのみを�
 ## 市場イベント・カレンダーの解釈ルール
 - 入力の【市場イベント・カレンダー】を解釈の前提に使う。MSCI入替・SQ・先物ロールが当日〜数日内にある場合、その他（33業種外）の急騰や価格規制なし比率の上昇は、まずインデックス連動の機械的フロー（パッシブ・裁定）で説明できないかを最優先で検討し、方向性売り（弱気）と断定しない。
 - FOMC・日銀会合の直前は、リスク回避のヘッジ・ショート積み増しが起きやすく、通過後は巻き戻し（ショートカバー）が起きやすい。イベント前の空売り比率上昇を「確信的な弱気」と断定しない。
-- 該当イベントが無い需給変化のみ、テーマ・ニュース・業種特性で説明する。イベントが効いている場合は `other_category_impact` や `false_positive_risks` でその旨を明記する。
+- 該当イベントが無い需給変化のみ、テーマ・ニュース・業種特性で説明する。イベントが効いている場合は `jpx_short_selling_breakdown_analysis` や `false_positive_risks` でその旨を明記する。
 
 ## 支配的マクロ背景のレジーム裁定（重要）
 - 冒頭の `current_macro_context` では、当日を「リスクオン／リスクオフ／レンジ・様子見」のいずれの体制かを1つ明示する（両論併記で終わらせない）。
@@ -327,6 +350,23 @@ def _z_text(change) -> str:
     return f"{change.zscore:+.2f}"
 
 
+# 画面の _cached_sector_history(days=90) と揃える
+SECTOR_HISTORY_DAYS = 90
+
+
+def _sector_history_for_prompt(target_date: str, fallback_df):
+    """業種の自己比（Zスコア等）用の履歴。読めなければ従来の weekly_df で続行する。"""
+    try:
+        from src.analyzer.ratio_calculator import RatioCalculator
+
+        history = RatioCalculator().get_weekly_trend(target_date, days=SECTOR_HISTORY_DAYS)
+        if history is not None and len(history) > 0:
+            return history
+    except Exception as e:  # noqa: BLE001 履歴が読めなくてもレポートは作る
+        logger.warning(f"業種履歴（{SECTOR_HISTORY_DAYS}日）の取得に失敗（14日分で続行）: {e}")
+    return fallback_df
+
+
 def _safe_sector_returns(target_date: str) -> dict:
     """業種別騰落率を取得する。失敗しても空辞書を返し、従来の組み立てを続ける。"""
     try:
@@ -355,7 +395,11 @@ def build_user_prompt(
 
     # セクターデータを整形。計算は sector_insight に集約してあり、
     # Streamlit の業種タブが表示するのと同じ数字をここでも使う（AIと画面の食い違い防止）。
-    sector_rows = build_sector_insights(today_summary, weekly_df, sector_returns)
+    # Zスコア・パーセンタイル・連続日数には画面と同じ90日の履歴を使う。
+    # 以前は weekly_df（14日）を渡しており、画面（90日）とAIで同じ業種のZスコアが食い違っていた。
+    sector_rows = build_sector_insights(
+        today_summary, _sector_history_for_prompt(target_date, weekly_df), sector_returns
+    )
     sector_table = "\n".join(format_sector_prompt_line(row) for row in sector_rows)
 
     # 週次推移（JPX公式の市場全体データを優先）
@@ -557,15 +601,15 @@ def build_user_prompt(
 
 上記データを NEO真金融グランドマスター として分析し、
 「空売り比率 完全解読レポート」を指定のJSONフォーマットで出力してください。
-出力では `executive_summary` に3行以内の結論、`regime` に「リスクオン」「リスクオフ」「レンジ・様子見」のいずれか1つを必ず記述してください。
-特に、価格規制あり主導なのか、価格規制なし主導なのか、その他（33業種外）が市場全体を歪めているかを必ず明記してください。
-機械判定シグナルは結論の補助材料として使い、過剰に断定せず、反証条件も含めてください。
-シグナル履歴は、単日ノイズと継続フローを区別するために使ってください。
-出力では `signal_history_analysis`、`persistent_signal_summary`、`new_signal_summary`、`faded_signal_summary` に必ず履歴分析を記述してください。
-出力では `investment_guardrails`、`confirmation_conditions`、`false_positive_risks`、`additional_data_to_check` に必ず投資判断ガードレールを記述してください。
-出力では `dominant_market_themes`、`theme_shift_analysis`、`theme_sector_alignment`、`unverified_market_data` に必ず市場テーマ判定を記述してください。
-出力では `event_calendar_context` に市場イベント・カレンダーと当日需給の関係を必ず記述してください。特に「その他（33業種外）」の急騰や価格規制なし比率の上昇は、当日近傍のMSCI入替・SQ・先物ロールがあれば機械的フローとして突合し、`other_category_impact` にもその旨を明記してください。
-出力では `institutional_flow_alignment` に、Pro Intent（機関の狙い）が【機関フロー（投資主体別・週次）】と整合するかを必ず記述してください。海外投資家の現物/先物のnet方向と、空売り比率の方向性売りが一致するか・しないかを明示し、一致しない場合は売りの主体（ヘッジ/裁定/個人/自己売買）を推定してください。データ未接続時は「投資主体別の裏付けは未確認」と明記してください。
+- `executive_summary` に3行以内の結論、`regime` に「リスクオン」「リスクオフ」「レンジ・様子見」のいずれか1つ。
+- `supply_demand_regime_analysis` の冒頭で【需給レジーム（機械判定）】の判定名と確信度を示し、それと矛盾しないこと。
+- `jpx_short_selling_breakdown_analysis` で、価格規制あり主導か・なし主導か、その他（33業種外）が市場全体を歪めているかを明記。
+  当日近傍に MSCI入替・SQ・先物ロール・指数入替があれば機械的フローとして突合する。
+- 機械判定シグナルとシグナル履歴は、単日ノイズと継続フローを区別するために使い、`persistent_signal_summary`・
+  `new_signal_summary`・`faded_signal_summary` に各1〜2文で書く。過剰に断定せず、反証条件を `false_positive_risks` に書く。
+- `institutional_flow_alignment` には、海外投資家の現物/先物のnet方向と空売りの方向性売りが一致するかを週の日付つきで書く。
+  【鮮度注意】がある場合やデータ未接続時は「投資主体別の裏付けは未確認」と書き、裏付けに使わない。
+- 各欄の字数上限を守り、同じ事実を複数の欄で繰り返さない。
 """
     logger.info(f"プロンプト規模: user={len(prompt):,}字")
     return prompt
@@ -616,46 +660,72 @@ def _clip(text: str, max_chars: int) -> str:
     return text[:max_chars] + "\n\n[...以下、長文のため省略...]"
 
 
-# 00プロトコルのうち、本アプリのレポート生成に効く分析ルールの見出しキーワード。
-# モード定義・ChatGPT Project運用（前半）はアプリでは不要なため抽出しない。
-_PROTOCOL_DIGEST_KEYWORDS = [
-    "事実・推測・シナリオの分離",
-    "JPX分析の禁止・推奨表現",
-    "投資主体別の時間差ルール",
-    "J-NET判定ルール",
-    "GEX・オプション分析ルール",
-    "Global Macro分析ルール",
-    "テクニカル・クオンツ分析ルール",
-    "資金フロー・四半期テーマ転換監視ルール",
-    "心理・資金管理ルール",
-]
+_HEADING = re.compile(r"^(#{1,6})\s")
 
 
-def _extract_protocol_digest(text: str, max_chars: int = 12000) -> str:
-    """00プロトコルから分析ルールのセクションだけを抽出する。
+def _select_sections(text: str, keywords: list[str]) -> tuple[str, list[str]]:
+    """見出しにキーワードを含む章（配下の小見出しごと）だけを抜き出す。
 
-    旧実装は先頭からの単純クリップで、19,000字超の新版00では後半の
-    分析ルール（事実/推測分離・資金フロー区分等）が切り捨てられていた。
-    見出し構成が変わって1つも抽出できない場合は従来のクリップに戻す。
+    Returns:
+        (抜き出した本文, 1つも当たらなかったキーワード)
+    章の終わりは「同じか上のレベルの次の見出し」。`#`（ファイル題）は章として選ばない。
+    """
+    selected: list[str] = []
+    found: set[str] = set()
+    keep_level: int | None = None
+    for line in text.splitlines():
+        match = _HEADING.match(line)
+        if match:
+            level = len(match.group(1))
+            if keep_level is not None and level <= keep_level:
+                keep_level = None
+            if keep_level is None and level >= 2:
+                hit = next((kw for kw in keywords if kw in line), None)
+                if hit:
+                    keep_level = level
+                    found.add(hit)
+        if keep_level is not None:
+            selected.append(line)
+    missing = [kw for kw in keywords if kw not in found]
+    return "\n".join(selected).strip(), missing
+
+
+def _extract_sections(
+    text: str,
+    keywords: list[str],
+    max_chars: int = _KNOWLEDGE_SECTION_LIMIT,
+) -> str:
+    """ナレッジから関係する章だけを入れる。1つも当たらなければ先頭を短く切って入れる。
+
+    丸ごと入れる退避はしない（Vault の見出し変更1つで system が元の大きさに戻るため）。
     """
     if not text:
         return "[ファイル未配置]"
-    sections: list[str] = []
-    keep = False
-    buf: list[str] = []
-    for line in text.splitlines():
-        if line.startswith("## "):
-            if keep and buf:
-                sections.append("\n".join(buf).strip())
-            buf = [line]
-            keep = any(kw in line for kw in _PROTOCOL_DIGEST_KEYWORDS)
-        elif keep:
-            buf.append(line)
-    if keep and buf:
-        sections.append("\n".join(buf).strip())
-    if not sections:
-        return _clip(text, max_chars)
-    return _clip("\n\n".join(sections), max_chars)
+    body, missing = _select_sections(text, keywords)
+    if missing:
+        logger.warning(f"ナレッジの見出しが見つからない（Vault側で変わった可能性）: {missing}")
+    if not body:
+        return _clip(text, _KNOWLEDGE_FALLBACK_CLIP)
+    return _clip(body, max_chars)
+
+
+def missing_knowledge_sections(knowledge: dict[str, str] | None = None) -> dict[str, list[str]]:
+    """KNOWLEDGE_SECTIONS のうち、いまのナレッジに見出しが無いものを返す（点検用）。"""
+    knowledge = knowledge if knowledge is not None else load_effective_knowledge()
+    result: dict[str, list[str]] = {}
+    for key, keywords in KNOWLEDGE_SECTIONS.items():
+        text = knowledge.get(key, "")
+        if not text:
+            continue  # 未配置は別の問題（ローカル開発など）。ここでは鳴らさない
+        _, missing = _select_sections(text, keywords)
+        if missing:
+            result[key] = missing
+    return result
+
+
+def _extract_protocol_digest(text: str, max_chars: int = _KNOWLEDGE_SECTION_LIMIT) -> str:
+    """00プロトコルから分析ルールのセクションだけを抽出する（KNOWLEDGE_SECTIONS 参照）。"""
+    return _extract_sections(text, KNOWLEDGE_SECTIONS["project_protocol"], max_chars)
 
 
 def _build_sq_week_case_block(target_date: str) -> str:

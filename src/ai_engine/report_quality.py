@@ -104,7 +104,7 @@ def build_quality_feedback_prompt_block(
         "  - high項目は必ず解消する。",
         "  - 市場テーマ履歴・転換メモの主要テーマ名と変化状態を `dominant_market_themes` と `theme_shift_analysis` に反映する。",
         "  - 過剰断定表現は条件付き表現へ置き換える。",
-        "  - 投資判断ガードレール、反証条件、未確認データの区別を明記する。",
+        "  - 反証条件と未確認データの区別を明記する。入力に無い数値を作らない。",
     ])
     return "\n".join(lines)
 
@@ -261,17 +261,19 @@ def build_quality_comparison_markdown(comparison: dict) -> str:
     return "\n".join(lines).strip() + "\n"
 
 
+# 2026-09-30 の出力再編（31→19項目）に合わせた。旧形式のレポートにも同じ語が
+# 含まれるものだけを選び、過去分の採点が再編で崩れないようにしている。
 REQUIRED_MARKDOWN_SECTIONS = [
+    ("本日の結論", "本日の結論"),
     ("現在の支配的マクロ背景", "現在の支配的マクロ背景"),
-    ("東証全体サマリー", "東証全体サマリー"),
+    ("需給レジーム", "需給レジーム"),
     ("JPX空売り内訳分析", "JPX空売り内訳分析"),
     ("市場テーマ判定", "市場テーマ判定"),
+    ("注目業種", "注目業種"),
     ("シグナル履歴分析", "シグナル履歴分析"),
-    ("投資判断ガードレール", "投資判断ガードレール"),
     ("Retail Trap vs Pro Intent", "Retail Trap vs Pro Intent"),
-    ("戦略的示唆", "戦略的示唆"),
-    ("総括", "総括"),
-    ("次の監視ポイント", "次の監視ポイント"),
+    ("確認条件", "確認条件"),
+    ("投資判断ガードレール", "投資判断ガードレール"),
 ]
 
 REQUIRED_GUARDRAIL_TERMS = [
@@ -281,12 +283,11 @@ REQUIRED_GUARDRAIL_TERMS = [
     ("未確認データ区別", ["未確認", "追加で見るべきデータ"]),
 ]
 
+# investment_guardrails は描画側の固定文になったので AI の出力としては求めない。
 REQUIRED_JSON_LIST_FIELDS = [
     ("dominant_market_themes", "市場テーマ候補", 1),
-    ("investment_guardrails", "投資判断ガードレール", 3),
     ("confirmation_conditions", "翌営業日の確認条件", 3),
-    ("false_positive_risks", "誤判定リスク", 3),
-    ("additional_data_to_check", "追加確認データ", 3),
+    ("false_positive_risks", "反証条件・誤判定リスク", 2),
 ]
 
 
@@ -381,7 +382,7 @@ def _evaluate_json_fields(data: dict[str, Any]) -> list[ReportQualityItem]:
 
     for field_name, label in [
         ("theme_shift_analysis", "テーマ転換分析"),
-        ("theme_sector_alignment", "テーマと業種の整合性"),
+        ("supply_demand_regime_analysis", "需給レジーム分析"),
     ]:
         value = str(data.get(field_name) or "").strip()
         passed = bool(value) and "未生成" not in value

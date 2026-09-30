@@ -84,6 +84,6 @@ def build_house_view_prompt_block() -> str:
         f"- {freshness}\n"
         f"{hv.content.strip()}\n"
         "- これを支配的マクロ背景の起点とし、当日のニュース見出し・業種別空売りデータと\n"
-        "  『整合するか／反するか』を theme_shift_analysis と theme_sector_alignment で\n"
+        "  『整合するか／反するか』を theme_shift_analysis と各テーマの short_ratio_alignment で\n"
         "  必ず突合すること。反する場合は条件付きで再評価し、根拠を明示する。"
     )

@@ -118,7 +118,7 @@ def build_theme_transition_prompt_block(
         "- 解釈指示:",
         "  - 新規・強化テーマは `dominant_market_themes` と `theme_shift_analysis` へ優先的に反映する。",
         "  - 弱体化・消滅テーマは、前提テーマの後退または市場の関心移動として条件付きで扱う。",
-        "  - テーマ変化と業種別空売り比率・価格規制あり/なしが整合するかを `theme_sector_alignment` に明記する。",
+        "  - テーマ変化と業種別空売り比率・価格規制あり/なしが整合するかを `dominant_market_themes` の各 `short_ratio_alignment` に明記する。",
     ])
     return "\n".join(lines)
 

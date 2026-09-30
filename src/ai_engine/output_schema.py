@@ -1,26 +1,33 @@
 """
 Gemini AI の出力スキーマ（Pydantic）
+
+2026-09-30 に 31項目 → 19項目へ再編した。狙いは3つ。
+- 同じことを3回書かせない（本日の結論／東証全体サマリー／総括、シグナル履歴4節など）。
+- 毎日同じ文面になる定型（投資判断ガードレール）はAIに書かせず、描画側で固定表示する。
+- 入力に無いデータを誘発する欄を置かない（戦略的示唆が「25日線割れで撤退」等を作っていた）。
+出力量はそのまま生成時間に効くので、各欄に分量の上限を書いている。
+
+過去に保存した report_json は旧スキーマのまま残る。読み直さないので互換は不要だが、
+pydantic は未知のキーを無視するため、旧JSONを流し込んでも落ちない。
 """
 from pydantic import BaseModel, Field
-from typing import Optional
 
 
 class SectorAnalysis(BaseModel):
     sector_name: str
-    s33_code: str
+    s33_code: str = ""
     short_ratio_pct: float
-    zone_label: str
-    pro_intent: str        # 機関の真の狙い。入力データに基づく条件付き推論に限定する。
-    retail_trap: str       # Retailが陥りやすい誤解
-    interpretation: str    # 総合解釈。空売り比率は残高ではなく日次フローとして扱う。
-
-
-class StrategicSuggestion(BaseModel):
-    title: str
-    target_sectors: list[str]
-    strategy_type: str     # "long" | "short" | "options_call" | "options_put" | "hedge"
-    rationale: str
-    risk_warning: str
+    zone_label: str = ""
+    quadrant: str = Field(
+        default="",
+        description=(
+            "空売り比率の前日比×株価騰落率の4象限。"
+            "「売り吸収」「方向性売り」「ショートカバー候補」「買い不在」「株価未取得」のいずれか1つ"
+        ),
+    )
+    interpretation: str = Field(
+        description="1〜2文。入力の数値（比率・前日比・騰落率・規制あり/なし）を示してから解釈を条件付きで書く"
+    )
 
 
 class DominantMarketTheme(BaseModel):
@@ -30,7 +37,9 @@ class DominantMarketTheme(BaseModel):
     evidence: list[str]
     impact_channels: list[str]
     related_sectors: list[str]
-    short_ratio_alignment: str
+    short_ratio_alignment: str = Field(
+        description="このテーマと関連業種の空売り比率・4象限・価格規制内訳が整合するか。1〜2文"
+    )
     caveat: str              # 未確認データ・反証条件・過剰断定回避の注記
     flow_classification: str = Field(
         default="Unconfirmed",
@@ -43,166 +52,109 @@ class DominantMarketTheme(BaseModel):
 
 
 class ReadingReport(BaseModel):
-    """AIが生成する完全解読レポートの構造"""
+    """AIが生成する空売り比率レポートの構造"""
 
-    # ★ 結論とレジーム（レポート冒頭に表示）
+    # ── 結論 ──
     executive_summary: str = Field(
         default="",
-        description="レポート全体の結論を3行以内で要約。何が起きたか・需給の主因・翌営業日の焦点",
+        description="3行以内。何が起きたか・需給の主因・翌営業日の焦点。機械判定レジームと矛盾させない",
     )
     regime: str = Field(
         default="",
         description='当日の市場体制。「リスクオン」「リスクオフ」「レンジ・様子見」のいずれか1つだけ',
     )
-
-    # ★ Step 0必須項目（過去年パターン汚染防止）
     current_macro_context: str = Field(
-        description="現在の支配的マクロ背景（イラン情勢等）を1〜3行で明記"
+        default="",
+        description="現在の支配的マクロ背景を1〜2文で（Step 0: 過去年パターンを投影しない）",
     )
 
-    # 全体サマリー
-    market_overall_summary: str = Field(
-        description=(
-            "東証全体の空売り比率の現状と意味。日次売買代金フローとして解釈し、売り残高とは表現しない。"
-            "「事実:」「解釈:」「推測:」ラベルで確度を分離する"
-        )
-    )
-
+    # ── 市場全体 ──
     supply_demand_regime_analysis: str = Field(
         default="需給レジームの専用分析は未生成です。",
         description=(
-            "入力の【需給レジーム（機械判定）】に対する解釈。機械判定と矛盾しないこと。"
+            "東証全体の需給。入力の【需給レジーム（機械判定）】の判定名を明記し、それと矛盾しないこと。"
             "比率・絶対額（空売り代金）・市場流動性（売買代金）・価格反応の4つを分けて述べ、"
-            "特に『比率が高い』のか『空売り代金が実額で増えた』のかを区別する。"
-            "THIN_MARKET のときは商いの細りによる見かけの高比率であり売り圧力の強化と読まない。"
-            "未取得の入力があればそれを明記し、その入力を要する判断は行わない。"
-            "なお `regime`（リスクオン/リスクオフ/レンジ）とは別軸であり、混同しないこと"
+            "直近の週次推移にも1文で触れる。THIN_MARKET のときは見かけの高比率として扱う。"
+            "「事実:」「解釈:」「推測:」ラベルで確度を分ける。400字以内"
         ),
     )
-
     jpx_short_selling_breakdown_analysis: str = Field(
-        description="JPX公式内訳（価格規制あり/なし、規制なし構成比、実注文）の需給解釈"
-    )
-
-    price_restriction_signal: str = Field(
-        description="価格規制ありを方向性売り寄り、価格規制なしをヘッジ・裁定寄りとして分解した投資シグナル。断定せず条件付きで記述"
-    )
-
-    other_category_impact: str = Field(
+        default="JPX公式内訳の専用分析は未生成です。",
         description=(
-            "その他（33業種外：ETF・REIT等）の市場全体への影響と無視してよいかの判断。"
-            "入力の市場イベント・カレンダーに当日近傍のMSCI入替・SQ・先物ロールがある場合は、"
-            "その他の急騰や規制なし比率の上昇を当該イベント由来の機械的フローとして突合し、明記する"
-        )
+            "JPX公式内訳の解釈。価格規制あり（方向性売り寄り）/なし（ヘッジ・裁定寄り）/規制なし構成比/"
+            "その他（33業種外）の影響をまとめ、「方向性売り主導」か「ヘッジ・裁定主導」かを1つに分類する。"
+            "入力に無い前日値を作らない。「事実:」「解釈:」「推測:」ラベルつき。350字以内"
+        ),
     )
-
     event_calendar_context: str = Field(
         default="市場イベント文脈の専用分析は未生成です。",
         description=(
-            "入力の市場イベント・カレンダーと当日の空売り需給の関係。特に当日近傍の"
-            "MSCI入替・SQ・先物ロールが、その他（33業種外）や価格規制なし比率の機械的フローを"
-            "どの程度説明するかを明記。FOMC・日銀会合が近い場合は通過前後の需給バイアスにも言及する"
-        )
+            "入力の市場イベント・カレンダーと当日需給の関係。MSCI入替・SQ・先物ロール・指数入替が近い場合は"
+            "機械的フローとして突合する。FOMC・日銀会合が近い場合は通過前後の需給バイアスに触れる。250字以内"
+        ),
     )
 
-    weekly_trend_analysis: str = Field(
-        description="直近1週間のトレンド解釈"
-    )
-
+    # ── テーマ ──
     dominant_market_themes: list[DominantMarketTheme] = Field(
         default_factory=list,
-        description="市場が現在見ている主要テーマ候補。根拠、影響経路、関連業種、空売り比率との整合性を含める"
+        description="主要テーマ候補を1〜3件。根拠・影響経路・関連業種・空売り比率との整合性を含める",
     )
-
     theme_shift_analysis: str = Field(
         default="市場テーマ転換の専用分析は未生成です。",
-        description="前提テーマが変わりつつあるかを、根拠あり/推測/未確認を分けて条件付きで記述"
+        description="前提テーマ（ハウスビュー）から変わりつつあるかを、根拠あり/推測/未確認を分けて。250字以内",
     )
-
-    theme_sector_alignment: str = Field(
-        default="市場テーマと業種別空売り比率の整合性分析は未生成です。",
-        description="主要テーマと業種別空売り比率・価格規制内訳が整合するか、整合しないかを記述"
-    )
-
-    unverified_market_data: list[str] = Field(
-        default_factory=list,
-        description="未取得・未確認の市場データ。VIX、WTI、SOX、GEX、米金利、ドル円等を事実として断定しないために列挙"
-    )
-
-    signal_history_analysis: str = Field(
-        description="機械判定シグナルの継続・新規・消滅を分析し、単日ノイズと継続フローを区別した解釈"
-    )
-
-    persistent_signal_summary: str = Field(
-        description="継続シグナルの要約。何日継続しているか、需給トレンドとして重視すべき対象を明記"
-    )
-
-    new_signal_summary: str = Field(
-        description="新規発生シグナルの要約。初動として監視すべき対象と反証条件を明記"
-    )
-
-    faded_signal_summary: str = Field(
-        description="消滅・弱体化したシグナルの要約。売り圧力後退やノイズ化の可能性を条件付きで記述"
-    )
-
-    investment_guardrails: list[str] = Field(
-        description="投資判断の安全柵。売買推奨ではないこと、空売り比率単独で判断しないこと、反証条件を確認することを3〜5項目で明記"
-    )
-
-    confirmation_conditions: list[str] = Field(
-        description="翌営業日以降に確認すべき条件。シグナル継続、価格規制あり/なしの変化、市場全体との乖離などを3〜5項目で明記"
-    )
-
-    false_positive_risks: list[str] = Field(
-        description="誤判定しやすいケース。ヘッジ・裁定混入、ETF/REIT等のその他影響、単日ノイズ、イベント起因の一過性フローなどを3〜5項目で明記"
-    )
-
-    additional_data_to_check: list[str] = Field(
-        description="空売り比率だけでは不足するため追加確認すべきデータ。株価、出来高、先物、オプション、主体別売買、信用残などを3〜5項目で明記"
-    )
-
-    # Retail vs Pro 対比（必須）
-    retail_trap: str = Field(
-        description="今週の数値からRetailが陥りやすい誤解・罠"
-    )
-    pro_intent: str = Field(
-        description="機関投資家・ヘッジファンドの真の狙いと意図"
-    )
-
     institutional_flow_alignment: str = Field(
         default="投資主体別フローの突合は未生成です。",
         description=(
-            "Pro Intentと投資主体別フロー（週次・海外投資家/信託/個人等の現物・先物net）の"
-            "整合性。空売り比率の方向性売りが主体別フローと一致するか、しない場合は売りの主体"
-            "（ヘッジ/裁定/個人/自己売買）を推定。データ未接続時は未確認と明記"
-        )
+            "投資主体別フロー（週次）と空売りの方向性売りが整合するか。週の日付を必ず書く。"
+            "入力に【鮮度注意】がある場合は裏付けに使わず「未確認」と書く。データ未接続時も未確認と明記。200字以内"
+        ),
     )
 
-    # 業種別分析（上位5 + 下位5）
+    # ── 読み筋 ──
+    retail_trap: str = Field(
+        default="",
+        description="当日の数値から個人が陥りやすい誤読を1〜2文で",
+    )
+    pro_intent: str = Field(
+        default="",
+        description="機関の狙いとして考えられるものを1〜2文で。推測であることを明示し、反証条件を添える",
+    )
+
+    # ── 業種 ──
     top_sectors_analysis: list[SectorAnalysis] = Field(
-        description="空売り比率が高い注目5業種の分析"
+        default_factory=list,
+        description="空売り比率が高い、または前日比の変化が大きい注目5業種",
     )
     low_sectors_analysis: list[SectorAnalysis] = Field(
-        description="空売り比率が低い注目5業種の分析"
+        default_factory=list,
+        description="空売り比率が低い注目3業種",
     )
 
-    # 異常値コメント
-    anomaly_commentary: Optional[str] = Field(
-        default=None,
-        description="検知された異常値への解説（あれば）"
+    # ── シグナル履歴 ──
+    persistent_signal_summary: str = Field(
+        default="継続シグナルの専用分析は未生成です。",
+        description="継続シグナル（何日継続か・対象）を1〜2文で",
+    )
+    new_signal_summary: str = Field(
+        default="新規シグナルの専用分析は未生成です。",
+        description="新規シグナルを1〜2文で。翌営業日の再現性確認が必要と明記",
+    )
+    faded_signal_summary: str = Field(
+        default="消滅・弱体化シグナルの専用分析は未生成です。",
+        description="消滅・弱体化シグナルを1〜2文で。1日だけの消滅はノイズ扱い",
     )
 
-    # 戦略的示唆
-    strategic_suggestions: list[StrategicSuggestion] = Field(
-        description="2〜4つの具体的な戦略示唆。入力にない価格水準や確率を作らず、反証条件を含める"
+    # ── 次に見るもの ──
+    confirmation_conditions: list[str] = Field(
+        default_factory=list,
+        description="翌営業日以降に確認すべき条件を3〜5項目。閾値を書く場合は入力にある数値だけを使う",
     )
-
-    # 結論
-    overall_conclusion: str = Field(
-        description="参謀としての総括コメント（3〜5行）"
+    false_positive_risks: list[str] = Field(
+        default_factory=list,
+        description="この解釈が外れる条件・誤判定しやすいケース（ヘッジ・裁定混入、指数イベント、単日ノイズ等）を2〜4項目",
     )
-
-    # メタ情報
-    next_watch_points: list[str] = Field(
-        description="次の監視ポイント（3〜5項目）"
+    unverified_market_data: list[str] = Field(
+        default_factory=list,
+        description="入力に無い・未確認の市場データ。事実として断定しないために列挙",
     )

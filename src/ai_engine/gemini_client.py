@@ -22,6 +22,7 @@ from config.settings import (
 from src.ai_engine.output_schema import ReadingReport
 from src.ai_engine.prompt_builder import build_system_prompt, build_user_prompt
 from src.ai_engine.report_lint import lint_report_markdown
+from src.ai_engine.report_renderer import render_report_markdown
 
 
 class GeminiReportGenerator:
@@ -265,100 +266,19 @@ class GeminiReportGenerator:
 
     @classmethod
     def _parse_response(cls, raw_text: str) -> ReadingReport:
-        """JSON レスポンスをパースしてPydanticオブジェクトに変換"""
+        """JSON レスポンスをパースしてPydanticオブジェクトに変換。
+
+        欠けた欄の既定値はスキーマ側（output_schema.py）が持つ。モデルが一部の欄を
+        落としてもレポート生成は止めず、「未生成」と表示して品質チェックで拾う。
+        """
         text = cls._extract_json_text(raw_text)
 
         try:
             data = cls._loads_json_tolerant(text)
-            # モデルが新設フィールドを落とした場合でも、レポート生成を止めない。
-            data.setdefault(
-                "supply_demand_regime_analysis",
-                "需給レジームの専用分析は未生成です。",
-            )
-            data.setdefault(
-                "jpx_short_selling_breakdown_analysis",
-                "JPX公式内訳の専用分析は未生成です。東証全体サマリーを参照してください。",
-            )
-            data.setdefault(
-                "price_restriction_signal",
-                "価格規制あり/なしの専用シグナルは未生成です。",
-            )
-            data.setdefault(
-                "other_category_impact",
-                "その他（33業種外）の専用分析は未生成です。",
-            )
-            data.setdefault(
-                "signal_history_analysis",
-                "シグナル履歴の専用分析は未生成です。",
-            )
-            data.setdefault(
-                "persistent_signal_summary",
-                "継続シグナルの専用分析は未生成です。",
-            )
-            data.setdefault(
-                "new_signal_summary",
-                "新規シグナルの専用分析は未生成です。",
-            )
-            data.setdefault(
-                "faded_signal_summary",
-                "消滅・弱体化シグナルの専用分析は未生成です。",
-            )
-            data.setdefault(
-                "event_calendar_context",
-                "市場イベント文脈の専用分析は未生成です。",
-            )
-            data.setdefault(
-                "institutional_flow_alignment",
-                "投資主体別フローの突合は未生成です。",
-            )
-            data.setdefault(
-                "investment_guardrails",
-                [
-                    "本レポートは売買推奨ではなく、JPX日次フローを使った需給分析です。",
-                    "空売り比率単独では判断せず、株価・出来高・先物・外部イベントを合わせて確認してください。",
-                    "新規シグナルは初動候補であり、翌営業日の再現性確認を前提に扱ってください。",
-                ],
-            )
-            data.setdefault(
-                "confirmation_conditions",
-                [
-                    "方向性売り寄りの業種で価格規制あり比率が継続するか。",
-                    "ショートカバー候補で総空売り比率と価格規制あり比率が同時に低下するか。",
-                    "東証全体と業種別の乖離が縮小するか拡大するか。",
-                ],
-            )
-            data.setdefault(
-                "false_positive_risks",
-                [
-                    "価格規制なしの上昇はヘッジ・裁定・流動性供給を含むため、弱気売りと単純解釈しないでください。",
-                    "その他（33業種外）の影響が大きい日は、33業種平均と市場全体がずれる可能性があります。",
-                    "単日だけの急変はイベント起因の一過性フローである可能性があります。",
-                ],
-            )
-            data.setdefault(
-                "additional_data_to_check",
-                [
-                    "対象業種の株価推移と出来高。",
-                    "TOPIX・日経平均先物、オプション、ボラティリティ指標。",
-                    "主体別売買動向、信用残、個別銘柄のニュース。",
-                ],
-            )
-            data.setdefault("executive_summary", "")
-            data.setdefault("regime", "")
-            data.setdefault("dominant_market_themes", [])
-            data.setdefault(
-                "theme_shift_analysis",
-                "市場テーマ転換の専用分析は未生成です。",
-            )
-            data.setdefault(
-                "theme_sector_alignment",
-                "市場テーマと業種別空売り比率の整合性分析は未生成です。",
-            )
-            data.setdefault("unverified_market_data", [])
-            return ReadingReport(**data)
         except json.JSONDecodeError as e:
             logger.error(f"JSONパースエラー: {e}\n{text[:500]}")
             raise ValueError(f"Geminiの出力がJSON形式ではありません: {e}")
+        return ReadingReport(**data)
 
     @staticmethod
     def _loads_json_tolerant(text: str) -> dict:
@@ -397,190 +317,5 @@ class GeminiReportGenerator:
         return text
 
     def _render_markdown(self, report: ReadingReport, date: str) -> str:
-        """Pydanticオブジェクトをレポート用Markdownに変換"""
-        lines = [
-            f"# 📊 空売り比率 完全解読レポート",
-            f"## 〜 33業種分析×マクロ統合〜 {date}",
-            "",
-            "> 注: 本レポートの空売り比率はJPX日次売買代金フローであり、空売り残高・建玉ではありません。",
-            "",
-            "---",
-            "",
-        ]
-
-        if report.executive_summary or report.regime:
-            lines += ["## 🧭 本日の結論"]
-            if report.executive_summary:
-                lines += [report.executive_summary, ""]
-            if report.regime:
-                lines += [f"**レジーム判定**: {report.regime}", ""]
-            lines += ["---", ""]
-
-        lines += [
-            f"## 🌍 現在の支配的マクロ背景",
-            f"{report.current_macro_context}",
-            "",
-            "---",
-            "",
-            f"## 📈 東証全体サマリー",
-            f"{report.market_overall_summary}",
-            "",
-            f"## ⚖️ 需給レジーム（比率・絶対額・流動性・価格反応）",
-            f"{report.supply_demand_regime_analysis}",
-            "",
-            f"## 🧭 JPX空売り内訳分析",
-            f"{report.jpx_short_selling_breakdown_analysis}",
-            "",
-            f"## ⚖️ 価格規制あり/なしの需給シグナル",
-            f"{report.price_restriction_signal}",
-            "",
-            f"## 🧩 その他（33業種外）の影響",
-            f"{report.other_category_impact}",
-            "",
-            f"## 🗓️ 市場イベント文脈",
-            f"{report.event_calendar_context}",
-            "",
-            f"## 📅 週次トレンド解析",
-            f"{report.weekly_trend_analysis}",
-            "",
-            f"## 🧭 市場テーマ判定",
-        ]
-
-        if report.dominant_market_themes:
-            for theme in report.dominant_market_themes:
-                lines += [
-                    f"### {theme.theme_name}",
-                    f"- **重要度**: {theme.importance}",
-                    f"- **状態**: {theme.status}",
-                    f"- **フロー区分**: {theme.flow_classification}",
-                    f"- **影響経路**: {', '.join(theme.impact_channels)}",
-                    f"- **関連業種**: {', '.join(theme.related_sectors)}",
-                    f"- **空売り比率との整合性**: {theme.short_ratio_alignment}",
-                    f"- **根拠**: {' / '.join(theme.evidence)}",
-                    f"- **注記**: {theme.caveat}",
-                    "",
-                ]
-        else:
-            lines += ["市場テーマ判定は未生成です。", ""]
-
-        lines += [
-            "### テーマ転換シグナル",
-            report.theme_shift_analysis,
-            "",
-            "### テーマと業種別空売りの整合性",
-            report.theme_sector_alignment,
-            "",
-        ]
-        if report.unverified_market_data:
-            lines += ["### 未確認データ"]
-            for item in report.unverified_market_data:
-                lines.append(f"- {item}")
-            lines.append("")
-
-        lines += [
-            f"## 🚨 シグナル履歴分析",
-            f"{report.signal_history_analysis}",
-            "",
-            f"### 継続シグナル",
-            f"{report.persistent_signal_summary}",
-            "",
-            f"### 新規シグナル",
-            f"{report.new_signal_summary}",
-            "",
-            f"### 消滅・弱体化シグナル",
-            f"{report.faded_signal_summary}",
-            "",
-            "---",
-            "",
-            "## 🛡️ 投資判断ガードレール",
-            "",
-            "### このレポートの使い方",
-        ]
-        for item in report.investment_guardrails:
-            lines.append(f"- {item}")
-
-        lines += [
-            "",
-            "### 翌営業日の確認条件",
-        ]
-        for item in report.confirmation_conditions:
-            lines.append(f"- {item}")
-
-        lines += [
-            "",
-            "### 誤判定しやすいケース",
-        ]
-        for item in report.false_positive_risks:
-            lines.append(f"- {item}")
-
-        lines += [
-            "",
-            "### 追加で見るべきデータ",
-        ]
-        for item in report.additional_data_to_check:
-            lines.append(f"- {item}")
-
-        lines += [
-            "",
-            "---",
-            "",
-            "## ⚔️ Retail Trap vs Pro Intent",
-            "",
-            f"**🪤 Retail Trap（素人の罠）**",
-            f"{report.retail_trap}",
-            "",
-            f"**🎯 Pro Intent（機関の真の狙い）**",
-            f"{report.pro_intent}",
-            "",
-            f"**🏦 投資主体別フローとの整合性**",
-            f"{report.institutional_flow_alignment}",
-            "",
-            "---",
-            "",
-            "## 🔴 高空売りゾーン 注目業種",
-        ]
-
-        for s in report.top_sectors_analysis:
-            lines += [
-                f"### {s.sector_name}（{s.short_ratio_pct:.1f}%）",
-                f"- **ゾーン**: {s.zone_label}",
-                f"- **Pro Intent**: {s.pro_intent}",
-                f"- **Retail Trap**: {s.retail_trap}",
-                f"- **解釈**: {s.interpretation}",
-                "",
-            ]
-
-        lines += ["---", "", "## 🟢 低空売りゾーン 注目業種"]
-        for s in report.low_sectors_analysis:
-            lines += [
-                f"### {s.sector_name}（{s.short_ratio_pct:.1f}%）",
-                f"- **解釈**: {s.interpretation}",
-                "",
-            ]
-
-        if report.anomaly_commentary:
-            lines += ["---", "", "## ⚠️ 異常値解説", report.anomaly_commentary, ""]
-
-        lines += ["---", "", "## 💡 戦略的示唆"]
-        for i, sg in enumerate(report.strategic_suggestions, 1):
-            lines += [
-                f"### {i}. {sg.title}",
-                f"- **対象業種**: {', '.join(sg.target_sectors)}",
-                f"- **戦略タイプ**: {sg.strategy_type}",
-                f"- **根拠**: {sg.rationale}",
-                f"- **リスク注意**: {sg.risk_warning}",
-                "",
-            ]
-
-        lines += [
-            "---",
-            "",
-            "## 📌 総括",
-            report.overall_conclusion,
-            "",
-            "## 👁 次の監視ポイント",
-        ]
-        for wp in report.next_watch_points:
-            lines.append(f"- {wp}")
-
-        return "\n".join(lines)
+        """Pydanticオブジェクトをレポート用Markdownに変換（描画は report_renderer に集約）"""
+        return render_report_markdown(report, date)

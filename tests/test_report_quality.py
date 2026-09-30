@@ -9,24 +9,28 @@ from src.ai_engine.report_quality import (
     build_quality_review_markdown,
     evaluate_report_quality,
 )
+from src.ai_engine.report_renderer import HEADER_NOTE, STATIC_GUARDRAILS
 
 
 def _complete_markdown(extra: str = "") -> str:
+    # ガードレールは描画側の固定文（report_renderer.STATIC_GUARDRAILS）をそのまま使う。
+    # 品質チェックの必須語が固定文だけで満たされることもこれで担保する。
+    guardrails = "\n".join(f"- {line}" for line in STATIC_GUARDRAILS)
     return f"""
 # 空売り比率 完全解読レポート
+{HEADER_NOTE}
+## 🧭 本日の結論
 ## 現在の支配的マクロ背景
-## 東証全体サマリー
+## ⚖️ 需給レジーム（比率・絶対額・流動性・価格反応）
 ## JPX空売り内訳分析
 ## 市場テーマ判定
+## 🔴 高空売りゾーン 注目業種
 ## シグナル履歴分析
-## 投資判断ガードレール
-本レポートは売買推奨ではなく、JPX日次売買代金フローを使った需給分析です。
-反証条件と確認条件を必ず確認します。
-未確認データは追加で見るべきデータとして分けます。
 ## Retail Trap vs Pro Intent
-## 戦略的示唆
-## 総括
-## 次の監視ポイント
+## ✅ 翌営業日の確認条件
+## ⚠️ 反証条件・誤判定しやすいケース
+## 投資判断ガードレール
+{guardrails}
 {extra}
 """
 
@@ -37,12 +41,10 @@ def _complete_json(
 ) -> str:
     return json.dumps({
         "dominant_market_themes": [{"theme_name": theme_name}],
-        "investment_guardrails": ["a", "b", "c"],
         "confirmation_conditions": ["a", "b", "c"],
-        "false_positive_risks": ["a", "b", "c"],
-        "additional_data_to_check": ["a", "b", "c"],
+        "false_positive_risks": ["a", "b"],
         "theme_shift_analysis": theme_shift_analysis,
-        "theme_sector_alignment": "業種別フローとの整合性を確認する。",
+        "supply_demand_regime_analysis": "事実: 判定 NEUTRAL。",
     }, ensure_ascii=False)
 
 

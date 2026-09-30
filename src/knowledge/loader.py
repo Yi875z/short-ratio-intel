@@ -23,6 +23,9 @@ EXTERNAL_KNOWLEDGE_FILES = {
     "quant_psych": "05_Quant_Tech_Psychology.md",
     "user_rules": "06_USER_INVESTMENT_OPERATING_RULES.md",
     "past_cases": "07_PAST_CASES_AND_REVIEW.md",
+    # 2026-09-30 追加。空売り集計（日次フロー）をプロの目で読むためのローカル専用ナレッジ
+    # （Vault 01_Knowledge の25番以降＝ChatGPT Project 未同梱）。本アプリ専用に書いたので丸ごと入れる。
+    "short_flow_pro": "29_SHORT_SELLING_FLOW_PRO_READING.md",
 }
 
 
@@ -120,6 +123,7 @@ def load_effective_knowledge() -> dict[str, str]:
     effective["market_preview_spec"] = external.get("market_preview_spec", "")
     effective["user_rules"] = external.get("user_rules", "")
     effective["past_cases"] = external.get("past_cases", "")
+    effective["short_flow_pro"] = external.get("short_flow_pro", "")
     return effective
 
 

@@ -49,22 +49,27 @@ JQUANTS_MAX_RETRIES: int = int(os.getenv("JQUANTS_MAX_RETRIES", "3"))
 #   2026-08-25 内部リトライ停止・日次枠での自動退避を実装。破滅的な連鎖が起きなくなったため、
 #              新しい 3.7 の質を実運用で評価する目的で再び 3.7 を先頭に置く。
 #              失敗しても GEMINI_FALLBACK_MODELS へ退避してレポート自体は出る。
+#   2026-09-30 3.6 へ戻す。8/25〜9/29 の実績（ai_reports.model_used）で、先頭の 3.7 が
+#              書けたのは22営業日中6日（27%）。3.6 は到達した16日中13日（81%）、
+#              3.5 は5日中3日。規則「退避が頻発するなら戻す」に該当。
+#              3.8 は本番同等の入力で 9/26 に2回・9/30 に1回、いずれも数秒で 503 のため不採用。
+#              3.7 は混雑の山がずれることがあるので、最後の退避先として残す。
 GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
 
 # リポジトリ側の正。ここが唯一の既定値で、GitHub Actions の workflow には
 # あえて GEMINI_MODEL を置いていない（二重管理で「既定だけ直して本番が変わらない」
 # 事故が起きるため）。環境変数での上書きは Streamlit Cloud Secrets 等の
 # 緊急避難用に残してあるが、上書き時は起動ログに警告を出して可視化する。
-GEMINI_MODEL_DEFAULT: str = "gemini-3.7-flash"
+GEMINI_MODEL_DEFAULT: str = "gemini-3.6-flash"
 GEMINI_MODEL: str = os.getenv("GEMINI_MODEL") or GEMINI_MODEL_DEFAULT
 GEMINI_MODEL_IS_OVERRIDDEN: bool = GEMINI_MODEL != GEMINI_MODEL_DEFAULT
 
 # 日次クォータ（RPD）枯渇や 504 の連続時に順に切り替える退避モデル。
 # RPD はモデル単位の枠なので、待つのではなく別モデルへ移るのが最速の復旧になる。
-# 3.6-flash は本番同等の入力で 61.7秒・スキーマ検証通過を実測済み（2026-08-25）。
+# 並びは実績の成功率順（上の経緯を参照）。
 GEMINI_FALLBACK_MODELS: list[str] = [
     m.strip()
-    for m in os.getenv("GEMINI_FALLBACK_MODELS", "gemini-3.6-flash,gemini-3.5-flash").split(",")
+    for m in os.getenv("GEMINI_FALLBACK_MODELS", "gemini-3.5-flash,gemini-3.7-flash").split(",")
     if m.strip()
 ]
 
@@ -79,6 +84,21 @@ GEMINI_FALLBACK_MODELS: list[str] = [
 #    伸ばし忘れると、退避モデルへ到達する前に job が打ち切られてレポートが欠落する。
 #    実測の目安: 3.6-flash 61.7秒 / 3.7-flash は調子が良い日で 85.5秒。
 GEMINI_REQUEST_TIMEOUT_SEC: int = int(os.getenv("GEMINI_REQUEST_TIMEOUT_SEC", "180"))
+
+# 全モデルが 503（high demand）で落ちたときの「巡回のやり直し」。定時パイプライン専用。
+#
+# 9/24・9/29 のレポート欠落は、3モデル×3回を約3分で撃ち尽くして諦めたのが直接の原因
+# （同一モデルへの再試行は 1秒・2秒後で、混雑が引く前に終わる）。一方 9/28 は
+# 1時間後の再実行で書けており、混雑は分〜時間の単位で引く。そこで、全滅したら
+# ROUND_WAIT だけ待ってもう一巡する。2巡目以降は各モデル1回だけ試す（枠の節約）。
+#
+# 全体は GEMINI_TOTAL_BUDGET_SEC に収める。次の1リクエストを始めると予算を超えるなら
+# 始めずに打ち切る。1巡目の最悪（3モデル×3回×180秒＋待機）は約27分で予算内なので、
+# 1巡目の挙動は従来と変わらない。
+# ⚠️ 予算を伸ばすなら daily_fetch.yml の timeout-minutes も伸ばす（テストで突き合わせ済み）。
+GEMINI_PIPELINE_MAX_ROUNDS: int = int(os.getenv("GEMINI_PIPELINE_MAX_ROUNDS", "3"))
+GEMINI_ROUND_WAIT_SEC: int = int(os.getenv("GEMINI_ROUND_WAIT_SEC", "300"))
+GEMINI_TOTAL_BUDGET_SEC: int = int(os.getenv("GEMINI_TOTAL_BUDGET_SEC", "1800"))
 
 # ---- Slack ----
 SLACK_WEBHOOK_URL: str = os.getenv("SLACK_WEBHOOK_URL", "")

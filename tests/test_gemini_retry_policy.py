@@ -224,7 +224,7 @@ def test_pipeline_records_the_model_actually_used(monkeypatch):
     import scripts.fetch_short_ratio as pipeline
 
     class _StubGenerator:
-        def __init__(self):
+        def __init__(self, **kwargs):
             self.model_name = "model-primary"
 
         def generate_report(self, *args, **kwargs):
@@ -252,34 +252,194 @@ def test_pipeline_records_the_model_actually_used(monkeypatch):
     assert chars == len("# レポート本文")
 
 
-def test_job_timeout_covers_the_whole_fallback_chain():
-    """GEMINI_REQUEST_TIMEOUT_SEC を伸ばすなら workflow の timeout-minutes も伸ばすこと。
-
-    job 側が短いと退避モデルへ到達する前に打ち切られ、自動退避が働かないまま
-    レポートが欠落する（2026-08-24 の欠落と同じ結果になる）。設定が片方だけ
-    動くのを防ぐため、最悪ケースの所要時間と job の上限を突き合わせる。
-    """
-    import re
+def _workflow_text(name: str) -> str:
     from pathlib import Path
 
+    root = Path(__file__).resolve().parent.parent
+    return (root / ".github" / "workflows" / name).read_text(encoding="utf-8")
+
+
+def _fetch_job_minutes(workflow: str) -> int:
+    """fetch ジョブの timeout-minutes。先頭の guard ジョブ(5分)を拾わないよう fetch 以降を読む。"""
+    import re
+
+    fetch_section = workflow.split("\n  fetch:\n", 1)[1]
+    return int(re.search(r"^\s*timeout-minutes:\s*(\d+)", fetch_section, re.M).group(1))
+
+
+# 取得・分析など AI 生成より前の処理時間。2026-09-29 の本番ログで約6分。
+PIPELINE_PREP_MINUTES = 8
+
+
+def test_job_timeout_covers_the_whole_ai_budget():
+    """GEMINI_TOTAL_BUDGET_SEC を伸ばすなら workflow の timeout-minutes も伸ばすこと。
+
+    job 側が短いと退避モデルや2巡目へ到達する前に打ち切られ、自動退避が働かないまま
+    レポートが欠落する（2026-08-24 の欠落と同じ結果になる）。設定が片方だけ
+    動くのを防ぐため、AI 生成の時間予算＋取得処理と job の上限を突き合わせる。
+    """
     import config.settings as settings
 
-    root = Path(__file__).resolve().parent.parent
-    workflow = (root / ".github" / "workflows" / "daily_fetch.yml").read_text(encoding="utf-8")
-    job_minutes = int(re.search(r"^\s*timeout-minutes:\s*(\d+)", workflow, re.M).group(1))
+    job_minutes = _fetch_job_minutes(_workflow_text("daily_fetch.yml"))
+    needed = settings.GEMINI_TOTAL_BUDGET_SEC / 60 + PIPELINE_PREP_MINUTES
+
+    assert job_minutes >= needed, (
+        f"job の上限 {job_minutes}分 < AI予算 {settings.GEMINI_TOTAL_BUDGET_SEC / 60:.0f}分"
+        f" + 取得処理 {PIPELINE_PREP_MINUTES}分"
+    )
+
+
+def test_budget_keeps_the_first_round_unchanged():
+    """時間予算は1巡目（全モデル×MAX_RETRIES×タイムアウト）を削ってはいけない。
+
+    予算が短いと、2巡目のための仕組みが1巡目の退避先を切り捨てることになる。
+    """
+    import config.settings as settings
 
     chain = [settings.GEMINI_MODEL] + [
         m for m in settings.GEMINI_FALLBACK_MODELS if m != settings.GEMINI_MODEL
     ]
-    worst_case_minutes = (
-        len(chain)
-        * gc.GeminiReportGenerator.MAX_RETRIES
-        * settings.GEMINI_REQUEST_TIMEOUT_SEC
-        / 60
+    retries = gc.GeminiReportGenerator.MAX_RETRIES
+    backoff = sum(2 ** a for a in range(retries - 1))   # 503 時の同一モデル再試行待ち
+    first_round_worst = len(chain) * (retries * settings.GEMINI_REQUEST_TIMEOUT_SEC + backoff)
+
+    assert settings.GEMINI_TOTAL_BUDGET_SEC >= first_round_worst
+
+
+# ──────────────────────────────────────────────────────────────
+# 全モデルが 503 で落ちたときの巡回やり直し（2026-09-30 追加）
+# 9/24・9/29 は 3モデル×3回を約3分で撃ち尽くし、混雑が引く前に諦めてレポートが欠落した。
+# ──────────────────────────────────────────────────────────────
+HIGH_DEMAND = RuntimeError(
+    "503 This model is currently experiencing high demand. "
+    "Spikes in demand are usually temporary. Please try again later."
+)
+
+
+def _patch_clock(monkeypatch):
+    """time.sleep で進む偽の時計。予算判定を実時間に依存させない。"""
+    clock = {"now": 0.0}
+    slept: list[float] = []
+
+    def _sleep(sec):
+        slept.append(sec)
+        clock["now"] += sec
+
+    monkeypatch.setattr(gc.time, "sleep", _sleep)
+    monkeypatch.setattr(gc.time, "monotonic", lambda: clock["now"])
+    return clock, slept
+
+
+def test_single_round_is_the_default(build_client):
+    """画面の手動生成（引数なし）は従来どおり1巡で諦める。数分待たせない。"""
+    client, fake, _ = build_client([HIGH_DEMAND] * 6)
+
+    with pytest.raises(RuntimeError, match="503"):
+        _generate(client)
+
+    assert len(fake.calls) == 6          # 2モデル × 3回
+    assert client.max_rounds == 1
+
+
+def test_pipeline_waits_and_retries_the_chain_after_all_503(build_client, monkeypatch):
+    """全モデルが 503 なら待ってからもう一巡し、2巡目は各モデル1回だけ試す。"""
+    client, fake, _ = build_client([HIGH_DEMAND] * 6 + [HIGH_DEMAND, "{}"])
+    client.max_rounds = 3
+    _, slept = _patch_clock(monkeypatch)
+
+    _generate(client)
+
+    models = [c["model"] for c in fake.calls]
+    assert models == ["model-primary"] * 3 + ["model-backup"] * 3 + ["model-primary", "model-backup"]
+    assert gc.GEMINI_ROUND_WAIT_SEC in slept
+    assert client.model_name == "model-backup"   # 実際に書いたモデルを記録できる
+
+
+def test_second_round_skips_models_whose_daily_quota_is_gone(build_client, monkeypatch):
+    """日次枠が尽きたモデルは2巡目でも叩かない（待っても今日は回復しない）。"""
+    client, fake, _ = build_client([RuntimeError(DAILY_QUOTA_ERROR)] + [HIGH_DEMAND] * 3 + ["{}"])
+    client.max_rounds = 2
+    _patch_clock(monkeypatch)
+
+    _generate(client)
+
+    assert [c["model"] for c in fake.calls] == (
+        ["model-primary"] + ["model-backup"] * 3 + ["model-backup"]
     )
 
-    assert job_minutes >= worst_case_minutes, (
-        f"job の上限 {job_minutes}分 < 最悪ケース {worst_case_minutes:.0f}分"
-        f"（モデル{len(chain)}件 × {gc.GeminiReportGenerator.MAX_RETRIES}回 × "
-        f"{settings.GEMINI_REQUEST_TIMEOUT_SEC}秒）"
-    )
+
+def test_rounds_stop_before_exceeding_the_time_budget(build_client, monkeypatch):
+    """次の1リクエストを始めると予算を超えるなら、巡回せずに打ち切る（job が先に切れないように）。"""
+    client, fake, _ = build_client([HIGH_DEMAND] * 100)
+    client.max_rounds = 50
+    _, slept = _patch_clock(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="503"):
+        _generate(client)
+
+    total = sum(slept)
+    assert total + gc.GEMINI_REQUEST_TIMEOUT_SEC <= gc.GEMINI_TOTAL_BUDGET_SEC
+    assert len(fake.calls) < 100
+
+
+def test_parse_error_is_not_retried_in_later_rounds(build_client, monkeypatch):
+    """パース失敗はモデルを変えても待っても直らないので、巡回し直さない。"""
+    parse_error = ValueError("1 validation error for ReadingReport")
+    client, fake, _ = build_client([parse_error] * 3)
+    client.max_rounds = 3
+    _, slept = _patch_clock(monkeypatch)
+
+    with pytest.raises(ValueError):
+        _generate(client)
+
+    assert len(fake.calls) == 3
+    assert gc.GEMINI_ROUND_WAIT_SEC not in slept
+
+
+def test_pipeline_uses_multiple_rounds(monkeypatch):
+    """定時パイプラインだけが巡回やり直しを有効にする。"""
+    import scripts.fetch_short_ratio as pipeline
+
+    captured: dict = {}
+
+    class _StubGenerator:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.model_name = "m"
+
+        def generate_report(self, *args, **kwargs):
+            class _R:
+                current_macro_context = ""
+
+                def model_dump_json(self):
+                    return "{}"
+
+            return _R(), "#"
+
+    monkeypatch.setattr(pipeline, "GeminiReportGenerator", _StubGenerator)
+    monkeypatch.setattr(pipeline, "save_ai_report", lambda *a, **kw: None)
+
+    pipeline._step_report("2026-09-29", {}, None, [], False)
+
+    assert captured["max_rounds"] == pipeline.GEMINI_PIPELINE_MAX_ROUNDS
+    assert pipeline.GEMINI_PIPELINE_MAX_ROUNDS > 1
+
+
+# ──────────────────────────────────────────────────────────────
+# Worker の重複起動ガード（2026-09-30 追加）
+# ──────────────────────────────────────────────────────────────
+@pytest.mark.parametrize("name", ["daily_fetch.yml", "us_daily_fetch.yml"])
+def test_workflow_guards_duplicate_worker_dispatch(name):
+    """Worker 由来の起動だけを重複判定し、人の手動実行は常に通す。"""
+    workflow = _workflow_text(name)
+
+    assert "source:" in workflow and "default: manual" in workflow
+    assert '[ "${{ inputs.source }}" != "worker" ]' in workflow
+    # 本処理は guard の判定に従う
+    fetch_section = workflow.split("\n  fetch:\n", 1)[1]
+    assert "needs: guard" in fetch_section
+    assert "if: needs.guard.outputs.skip != 'true'" in fetch_section
+    # 自分自身の run を数えない（数えると必ずスキップになる）
+    assert "select(.id != ${GITHUB_RUN_ID})" in workflow
+    # workflow_dispatch は Worker の入口。消さない
+    assert "workflow_dispatch:" in workflow

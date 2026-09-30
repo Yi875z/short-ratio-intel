@@ -29,15 +29,68 @@ on:
           - full         # 取得 + 市場テーマ判定 + AIレポート生成（通常）
           - fetch-only   # データ取得のみ（テーマ/レポートをスキップ）
           - no-news      # Tavilyニュースを使わず内部データのみで作成
+      source:
+        # Worker(jpx-report-scheduler) は worker を渡す。Actions 画面からの手動実行は manual のまま。
+        # guard は worker 由来の起動にだけ重複判定をかける（人の手動実行は常に通す）。
+        description: '起動元（手動実行は manual のままでよい）'
+        required: false
+        default: manual
+        type: string
 
 jobs:
+  # Worker の重複起動を弾くだけのジョブ（2026-09-30 追加）。
+  # Worker は「予定時刻以降に実行が無ければ撃つ」追い付き方式だが、実行済みなのに
+  # 追い付き時刻（分の1の位が7）で撃ち直す現象が続いている（9/28 は13回、9/29 は7回起動）。
+  # 起動のたびに Gemini を最大9回呼ぶので、成功した日も枠を削り、9/28 夜は 429 まで達した。
+  # Worker 側の原因は未確認。JPX_Analysis_System は 9/26 に同じガードで止めている。
+  guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
+    env:
+      TZ: UTC   # 下の日付計算は UTC 前提。
+    steps:
+      - name: 直近の定時(19:07 JST)以降に実行済みかを判定
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "${{ inputs.source }}" != "worker" ]; then
+            echo "人の手動実行なので常に実行する（Worker 由来だけ重複判定する）"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # 定時 19:07 JST = 10:07 UTC。直近のこの時刻以降に実行があれば当日ぶんは起動済み。
+          # conclusion は問わない（失敗の自動リトライはしない。2026-05-26 の連続実行事故）。
+          now=$(date -u +%s)
+          boundary=$(date -u -d "$(date -u +%F) 10:07:00" +%s)
+          if [ "$now" -lt "$boundary" ]; then
+            boundary=$((boundary - 86400))
+          fi
+          since=$(date -u -d "@$boundary" +%Y-%m-%dT%H:%M:%SZ)
+          n=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/daily_fetch.yml/runs?branch=main&per_page=30" \
+                --jq "[.workflow_runs[] | select(.created_at >= \"${since}\") | select(.id != ${GITHUB_RUN_ID})] | length")
+          echo "基準時刻 ${since} 以降の既存実行: ${n} 件"
+          if [ "$n" -gt 0 ]; then
+            echo "すでに起動済みのため本処理をスキップする"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
   fetch:
+    needs: guard
+    if: needs.guard.outputs.skip != 'true'
     runs-on: ubuntu-latest
     # AIレポート生成の最悪ケースに合わせる。
-    # config/settings.py の GEMINI_REQUEST_TIMEOUT_SEC(180秒) × MAX_RETRIES(3) × 退避先を含む
-    # 3モデル ≒ 27分 + 取得処理。ここが短いと退避モデルへ到達する前に打ち切られ、
-    # せっかくの自動退避が働かずレポートが欠落する（2026-08-25 に 20分から拡大）。
-    timeout-minutes: 35
+    # config/settings.py の GEMINI_TOTAL_BUDGET_SEC(30分) が AI 生成全体の上限で、
+    # 取得処理（実測 約6分）を足して 40分。ここが短いと退避モデルや2巡目へ到達する前に
+    # 打ち切られ、レポートが欠落する（2026-08-25 に 20→35分、2026-09-30 に 40分）。
+    timeout-minutes: 40
 
     env:
       TZ: Asia/Tokyo

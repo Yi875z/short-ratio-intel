@@ -44,7 +44,7 @@ load_dotenv(_PROJECT_ROOT / ".env")
 import requests
 from loguru import logger
 
-from config.settings import GEMINI_MODEL, SLACK_WEBHOOK_URL
+from config.settings import GEMINI_MODEL, GEMINI_PIPELINE_MAX_ROUNDS, SLACK_WEBHOOK_URL
 from src.ai_engine.gemini_client import GeminiReportGenerator
 from src.analyzer.anomaly_detector import AnomalyDetector
 from src.analyzer.market_breadth import (
@@ -299,7 +299,9 @@ def _step_report(
         通知に結論・レジームを載せるため report_obj も返す。
     """
     logger.info(f"[3/3] Gemini AIレポート生成 (model={GEMINI_MODEL})")
-    generator = GeminiReportGenerator()
+    # 定時実行は人が待っていないので、全モデルが混雑で落ちても数分おきに巡回し直す
+    # （9/24・9/29 は約3分で撃ち尽くして欠落した）。画面の手動生成は1巡のまま。
+    generator = GeminiReportGenerator(max_rounds=GEMINI_PIPELINE_MAX_ROUNDS)
     report_obj, markdown = generator.generate_report(
         report_date,
         today_summary,

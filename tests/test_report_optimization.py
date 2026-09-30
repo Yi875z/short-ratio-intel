@@ -109,6 +109,14 @@ def test_flags_stale_flow_used_as_evidence():
     assert "stale_flow_as_evidence" not in _codes(line, "【機関フロー】新しい週")
 
 
+def test_flags_short_cover_assertion():
+    """2026-10-01 の新形式レポートに残っていた断定。候補・可能性の形なら許す。"""
+    assert "short_cover_asserted" in _codes("日銀短観を控え、空売りの新規手控えと買い戻しが強まった。")
+    assert "short_cover_asserted" in _codes("新規売りが後退しショートカバーが入った。")
+    assert "short_cover_asserted" not in _codes("新規売りが後退しショートカバーが入った可能性がある。")
+    assert "short_cover_asserted" not in _codes("比率低下×株価上昇=ショートカバー候補（ポジション側データで要確認）")
+
+
 def test_regime_contradiction_on_thin_market():
     input_text = "判定: THIN_MARKET（薄商い・見かけの高比率） / 確信度: medium"
     codes = _codes("空売り比率が高く売り圧力が強い一日となった。", input_text)

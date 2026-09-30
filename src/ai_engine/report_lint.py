@@ -126,6 +126,14 @@ TECHNICAL_TERMS = ["移動平均", "25日線", "75日線", "RSI", "MACD", "ボ�
 REGIME_PATTERN = re.compile(r"判定:\s*([A-Z_\-]+)（([^）]+)）")
 THIN_MARKET_CONTRADICTIONS = ["売り圧力が強", "売り圧力の強", "売り圧力が高ま", "売り圧力が増"]
 
+# 買い戻し（ショートカバー）の断定。空売り比率の低下は新規の空売りが減ったことで、
+# 買い戻しの証拠ではない（ナレッジ29 §2）。新形式の最初のレポート（2026-10-01 検証）でも
+# 「空売りの新規手控えと買い戻しが強まった」「ショートカバーが入った」が残っていた。
+SHORT_COVER_ASSERTION = re.compile(
+    r"(買い戻し|買戻し|ショートカバー|踏み上げ)[^。、]{0,6}(が|を)?(入った|強まった|進んだ|発生した|起きた|加速した|誘発)"
+)
+SHORT_COVER_HEDGES = ["候補", "可能性", "推測", "かもしれ", "とは言えない", "ではない", "要確認", "確認できない"]
+
 # 投資主体別データに【鮮度注意】が付いた日に、それを裏付けとして使った文。
 STALE_FLOW_MARKER = "【鮮度注意】"
 FLOW_SUBJECT_TERMS = ["投資主体", "海外投資家", "主体別"]
@@ -241,6 +249,18 @@ def _lint_lines(markdown: str, input_text: str) -> list[ReportLintIssue]:
                     line=stripped,
                 ))
                 break
+
+        if (
+            not in_checklist
+            and SHORT_COVER_ASSERTION.search(stripped)
+            and not any(h in stripped for h in SHORT_COVER_HEDGES)
+        ):
+            issues.append(ReportLintIssue(
+                severity="medium",
+                code="short_cover_asserted",
+                message="買い戻し・踏み上げを断定（空売り比率だけではポジションの解消は分からない）",
+                line=stripped,
+            ))
 
         if FABRICATED_NUMBER_PATTERN.search(stripped):
             issues.append(ReportLintIssue(

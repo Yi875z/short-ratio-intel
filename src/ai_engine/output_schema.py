@@ -129,7 +129,7 @@ class ReadingReport(BaseModel):
     )
     low_sectors_analysis: list[SectorAnalysis] = Field(
         default_factory=list,
-        description="空売り比率が低い注目3業種",
+        description="空売り比率が低い注目3業種。top_sectors_analysis と同じ業種を重複させない",
     )
 
     # ── シグナル履歴 ──

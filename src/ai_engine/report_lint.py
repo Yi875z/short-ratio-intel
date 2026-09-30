@@ -107,6 +107,9 @@ BALANCE_NEGATION_MARKERS = [
 # （独立レビュー 2026-09-30 #5: 「信用取引残高」「Strike別建玉残高」を high で誤検知していた）。
 BALANCE_FLOW_SUBJECTS = ["空売り", "価格規制", "ショート", "売り方"]
 BALANCE_ALLOWED_DATA_NAMES = ["信用", "貸借", "残高報告", "0.5%", "Strike", "オプション", "先物"]
+# 「空売り残高が未確認」「残高データによる確認」のように、別データとして確認を求める文脈は正しい使い方
+# （ChatGPT 生成の検証 2026-10-01 で誤検知した）。
+BALANCE_ALLOWED_CONTEXT = ["未確認", "確認", "残高データ", "データ"]
 
 # 誇張。機械判定が NEUTRAL・確信度 low の日に「ベアからブルへ完全に反転」「流動性津波」と書いていた。
 HYPERBOLE_TERMS = ["完全に", "壊滅", "歴史的", "津波", "確実に", "間違いなく", "必至"]
@@ -230,6 +233,7 @@ def _lint_lines(markdown: str, input_text: str) -> list[ReportLintIssue]:
                 and not in_checklist
                 and any(s in stripped for s in BALANCE_FLOW_SUBJECTS)
                 and not any(a in stripped for a in BALANCE_ALLOWED_DATA_NAMES)
+                and not any(c in stripped for c in BALANCE_ALLOWED_CONTEXT)
                 and not any(m in stripped for m in BALANCE_NEGATION_MARKERS)
             ):
                 issues.append(ReportLintIssue(

@@ -215,6 +215,11 @@ def test_position_data_names_are_not_flagged_as_balance():
     """信用残・建玉残高は見に行くべきポジション側のデータ名であり、誤検知しない（独立レビュー #5）。"""
     assert "flow_as_balance" not in _codes("- 信用取引残高（買い残の整理状況および売り残の増減）")
     assert "flow_as_balance" not in _codes("- 日経225オプションのStrike別詳細建玉残高")
+    # 別データとして確認を求める文脈（ChatGPT 生成の検証で誤検知した実文）
+    assert "flow_as_balance" not in _codes("週次投資主体別、国内金利、空売り残高が未確認で、断定できない。")
+    assert "flow_as_balance" not in _codes("ショートカバー候補だが、残高データによる確認が必要。")
+    # 本来の検出対象は引き続き捕まえる
+    assert "flow_as_balance" in _codes("価格規制ありの残高が高水準で残っており、踏み上げが誘発される。")
 
 
 def test_market_dod_is_filled_from_the_series_without_bridging_gaps():

@@ -123,6 +123,16 @@ def test_sdk_internal_retry_is_disabled(build_client):
     assert options["timeout"] == gc.GEMINI_REQUEST_TIMEOUT_SEC
 
 
+def test_output_budget_comes_from_settings_and_stays_small(build_client):
+    """出力上限は settings の1箇所。大きな出力枠は混雑時に 503 で落とされやすい（2026-10-01）。"""
+    client, fake, _ = build_client(["{}"])
+    _generate(client)
+
+    budget = fake.calls[0]["kwargs"]["generation_config"]["max_output_tokens"]
+    assert budget == gc.GEMINI_MAX_OUTPUT_TOKENS
+    assert budget <= 16000, "32768 に戻すと混雑時に 503 で落ちやすい（PROJECT_RULES 参照）"
+
+
 def test_daily_quota_switches_model_without_waiting(build_client):
     """日次枠の枯渇は待っても回復しない → 同一モデルへの再試行はせず退避する"""
     client, fake, slept = build_client([RuntimeError(DAILY_QUOTA_ERROR), "{}"])

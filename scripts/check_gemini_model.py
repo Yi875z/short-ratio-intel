@@ -41,6 +41,7 @@ from loguru import logger
 
 from config.settings import (
     GEMINI_API_KEY,
+    GEMINI_MAX_OUTPUT_TOKENS,
     GEMINI_MODEL,
     GEMINI_REQUEST_TIMEOUT_SEC,
 )
@@ -76,7 +77,7 @@ def check_model(model_name: str, system_prompt: str, user_prompt: str) -> dict:
             user_prompt,
             generation_config=genai.GenerationConfig(
                 temperature=0.3,
-                max_output_tokens=32768,
+                max_output_tokens=GEMINI_MAX_OUTPUT_TOKENS,   # 本番と同じ出力枠で測る
                 response_mime_type="application/json",
             ),
             # 本番と同じ条件で測る（SDK 内部リトライを切って1呼び出し=1リクエスト）

@@ -12,6 +12,7 @@ from loguru import logger
 from config.settings import (
     GEMINI_API_KEY,
     GEMINI_FALLBACK_MODELS,
+    GEMINI_MAX_OUTPUT_TOKENS,
     GEMINI_MODEL,
     GEMINI_MODEL_DEFAULT,
     GEMINI_MODEL_IS_OVERRIDDEN,
@@ -36,6 +37,15 @@ class EmptyReportError(ValueError):
 
 # 中身があるとみなす最低条件。本日の結論があり、注目業種を最低この数だけ分析していること。
 _MIN_TOP_SECTORS = 3
+
+
+def _hit_output_limit(response) -> bool:
+    """応答が出力上限で打ち切られたか（finish_reason が MAX_TOKENS）。判定できなければ False。"""
+    try:
+        reason = response.candidates[0].finish_reason
+    except (AttributeError, IndexError, TypeError):
+        return False
+    return "MAX_TOKENS" in str(getattr(reason, "name", reason))
 
 
 class GeminiReportGenerator:
@@ -212,8 +222,8 @@ class GeminiReportGenerator:
                     user_prompt,
                     generation_config=genai.GenerationConfig(
                         temperature=0.3,    # 分析の一貫性を重視
-                        # 8192 では大きなレポートJSONが途中で切れて json.loads に失敗するため拡大
-                        max_output_tokens=32768,
+                        # 出力枠は大きすぎると混雑時に 503 で落とされやすい（settings の経緯を参照）
+                        max_output_tokens=GEMINI_MAX_OUTPUT_TOKENS,
                         response_mime_type="application/json",
                     ),
                     # SDK 既定の retry は 429/504 を一時エラーとみなし、既定デッドライン
@@ -230,6 +240,12 @@ class GeminiReportGenerator:
 
                 raw_text = response.text
                 logger.info(f"Gemini レスポンス受信: {len(raw_text)}文字")
+                if _hit_output_limit(response):
+                    # 途中で切れても json-repair で読める場合があるので止めないが、痕跡は残す。
+                    # 頻発するなら GEMINI_MAX_OUTPUT_TOKENS を見直す。
+                    logger.warning(
+                        f"出力上限 {GEMINI_MAX_OUTPUT_TOKENS} トークンに達して切れた可能性（{model_name}）"
+                    )
 
                 # JSONパース
                 report_obj = self._parse_response(raw_text)

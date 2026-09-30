@@ -192,7 +192,11 @@
 - **外部ナレッジの正本はリポジトリ外で管理**し、`knowledge_documents`（Supabase）に保存して配信する。
   リポ内 `src/knowledge/files/*.md` はローカル fallback 用の縮約版。更新は `python -m scripts.upload_knowledge_to_supabase`。
   読込は loader が Supabase 優先→ローカル fallback。
-- AIレポートのJSONは `gemini_client.py` で `max_output_tokens=32768` ＋ `json-repair` で堅牢化済み。この仕組みを壊さない。
+- AIレポートのJSONは `gemini_client.py` で `json-repair` による修復＋空に近い応答の退避で堅牢化済み。この仕組みを壊さない。
+  出力上限は `GEMINI_MAX_OUTPUT_TOKENS`（12000）。**2026-10-01 に 32768 から下げた**: 約36時間 503 が続いた間、同じ入力・同じ時刻で
+  12000 は成功・32768 は 503（1組の比較）。混雑時は大きな出力枠のリクエストから落とされると考えられる。
+  出力は19項目で約5,300字。項目を増やすならこの上限も見直す（切れると finish_reason=MAX_TOKENS の警告が出る）。
+  **503 の失敗も日次枠（20 req/日・モデル単位）を消費する**（10/1 に手元の検証と前夜の重複起動で 3.6 の枠を使い切った）。
 - **AIレポートの構成と入力（2026-09-30 再編）**:
   出力は19項目（`output_schema.py`）。重複（結論／サマリー／総括）と、入力外データを誘発する欄（戦略的示唆など）は持たない。
   **投資判断ガードレールはAIに書かせず `report_renderer.STATIC_GUARDRAILS` の固定文で出す**（品質チェックの必須語もここで満たす）。

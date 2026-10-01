@@ -836,8 +836,14 @@ def save_ai_report(date: str, macro_context: str,
         ).scalar_one_or_none()
 
         if existing:
+            # 作り直したときは書き手（モデル名）とマクロ背景も新しいものに揃える。
+            # 2026-10-01 まで本文だけを差し替えてモデル名を残しており、19:07 に Gemini 3.7 が書き
+            # 20:30 に dots 版へ差し替えた 10/1 が「gemini-3.7-flash」と記録されていた。
             existing.report_markdown = report_markdown
             existing.report_json = report_json
+            existing.macro_context = macro_context
+            if model_used:
+                existing.model_used = model_used
             existing.generated_at = datetime.utcnow()
         else:
             session.add(AiReport(

@@ -43,3 +43,28 @@ def test_invalid_or_empty_report_is_rejected(raw, reason):
 def test_code_fenced_json_is_accepted():
     """エージェントがコードブロックで囲んで返しても読める。"""
     validate_agent_report("```json\n" + _report() + "\n```", "2026-09-29")
+
+
+def test_overwriting_a_report_records_the_new_writer(tmp_path, monkeypatch):
+    """作り直したら書き手（model_used）も新しいものになる。
+
+    2026-10-01、19:07 に Gemini 3.7 が書き 20:30 に dots 版へ差し替えた 10/1 が、
+    本文は dots なのに model_used=gemini-3.7-flash のまま残っていた。
+    """
+    from sqlalchemy import create_engine
+
+    from src.storage import db
+    from src.storage.models import Base
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}")
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr(db, "_engine", engine)
+    monkeypatch.setattr(db, "REPORTS_DIR", tmp_path / "reports")
+
+    db.save_ai_report("2026-10-01", "Gemini の背景", "# Gemini", model_used="gemini-3.7-flash")
+    db.save_ai_report("2026-10-01", "dots の背景", "# dots", model_used="chatgpt-dots")
+
+    saved = db.get_ai_report("2026-10-01")
+    assert saved.model_used == "chatgpt-dots"
+    assert saved.macro_context == "dots の背景"
+    assert saved.report_markdown == "# dots"

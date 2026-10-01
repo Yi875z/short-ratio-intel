@@ -107,6 +107,12 @@ def test_flags_stale_flow_used_as_evidence():
     stale_input = "【機関フロー】\n- 【鮮度注意】このデータは分析日の19日前の週で…"
     assert "stale_flow_as_evidence" in _codes(line, stale_input)
     assert "stale_flow_as_evidence" not in _codes(line, "【機関フロー】新しい週")
+    # 確認条件の欄で「得られたら再評価する」と書くのは正しい扱い（dots の 9/24 で誤検知した実文）
+    checklist = (
+        "## ✅ 翌営業日の確認条件\n"
+        "- 対象週・公表日を揃えた投資主体別の現物／先物フローが得られた時点で、テーマ候補と主体別の裏付けを再評価する"
+    )
+    assert "stale_flow_as_evidence" not in _codes(checklist, stale_input)
 
 
 def test_flags_short_cover_assertion():

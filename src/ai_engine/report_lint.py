@@ -287,6 +287,9 @@ def _lint_lines(markdown: str, input_text: str) -> list[ReportLintIssue]:
 
         if (
             stale_flow
+            # 確認条件の欄は「揃ったデータが得られたら再評価する」と書く場所で、裏付けには使っていない
+            # （dots の 9/24 レポートで誤検知した）
+            and not in_checklist
             and any(t in stripped for t in FLOW_SUBJECT_TERMS)
             and any(t in stripped for t in EVIDENCE_TERMS)
             and "未確認" not in stripped

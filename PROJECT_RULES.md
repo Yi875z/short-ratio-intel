@@ -4,7 +4,8 @@
 > 本ファイルへの参照のみを記載し、ルール本文を複製しないこと。
 > 新しいAIエージェントを導入する場合も、そのエージェントの規約ファイルから本ファイルを参照させるだけでよい。
 
-- 最終更新: 2026-09-30（AIレポートを19項目へ再編・ナレッジを章抽出へ・業種行に自己比と売買代金シェア・表現lint追加・自己点検3件追加。既定モデルを 3.6 へ戻し 3.8 は不採用。全モデル 503 時の巡回やり直しと Worker 重複起動のガード。テスト基準を497件へ更新）
+- 最終更新: 2026-10-01（AIレポートの書き手を ChatGPT Pro の dots へ。Drive 受け渡し・検証付き取り込み。テスト基準523件）
+- 前々回: 2026-09-30（AIレポートを19項目へ再編・ナレッジを章抽出へ・業種行に自己比と売買代金シェア・表現lint追加・自己点検3件追加。既定モデルを 3.6 へ戻し 3.8 は不採用。全モデル 503 時の巡回やり直しと Worker 重複起動のガード。テスト基準を497件へ更新）
 - 前回: 2026-09-03（JPXの公開範囲を実測し直して訂正＝一覧は当月全営業日・アーカイブは過去12ヶ月全営業日。内訳欠測の検知2経路化、breakdown_source 列の追加）
 - 対象プロジェクト: short-ratio-intel（JPX空売り比率の取得・分析・Gemini AIレポート生成 Streamlit アプリ）
 - 公開区分: L3（コードは一般公開。ナレッジ原本・Secrets・個人データはリポジトリ外で非公開管理）
@@ -76,7 +77,7 @@
 - **技術スタック**: Python 3.12（Streamlit Community Cloud 固定。新しすぎる Python は固定依存の wheel が無くビルド失敗する）/
   pandas 2.2.0 / SQLAlchemy 2.0.27 / psycopg2-binary / pydantic 2.6.0 / loguru / feedparser / Streamlit / Gemini API / pytest
 - **起動コマンド**: `streamlit run app/streamlit_app.py`（本番は Streamlit Community Cloud・bcrypt ログイン付き。main へ push すると自動再デプロイ）
-- **テストコマンド**: `pytest`（基準: 全497件パス。2026-09-30 実測 23秒。レポート再編・lint・ナレッジ章抽出・鮮度・欠落点検の回帰テストを追加）
+- **テストコマンド**: `pytest`（基準: 全523件パス。2026-10-01 実測 22秒。dots 受け渡し・取り込み検証・連休明けの前日比を追加）
 - **DBスキーマの正**: `src/storage/db.py` の `get_engine()` が `DATABASE_URL` ありで Supabase(PostgreSQL)、無しでローカル SQLite に切替。
   スキーマ定義の正本ファイルは未確認（`src/storage/` 配下を参照）
 - **データソースと取得条件**:
@@ -131,6 +132,21 @@
     **Light では業種別空売り比率API（`/markets/short-ratio`）と業種別指数（`/indices/bars/daily`）が 403**。
     したがって空売り比率の取得元は今後も JPX 公開PDF が正であり、業種別騰落率は nikkei225jp.com のまま。
     このステップは **fail-soft**（失敗してもパイプラインを止めない）。空売り比率の取得0件とは扱いが違う
+- **AIレポートの書き手（2026-10-01〜）: ChatGPT Pro の dots（常駐エージェント）が主、Gemini は補助**:
+  Gemini 無料枠は 9/29〜10/1 に約36時間 503 が続き、出力上限・入力量・モデルを変えても安定しなかった。
+  利用者の方針は「レポートのたびに費用をかけない」「すべてクラウドで、スマホ・別PCでも見られる」。有料APIは使わない。
+  流れ: 19:07 `daily_fetch.yml` が取得後に材料を Google Drive の `short_ratio_agent/` に置く（`scripts/publish_agent_bundle.py`。
+  AI生成が失敗しても置く）→ 19:40 dots が `outputs/<日付>_report.json`（**システムが空で用意したファイル**）に書く →
+  20:30・23:30 `agent_report_import.yml` が検証して保存（`scripts/import_agent_report.py --from-drive`。未記入なら何もしない）。
+  **dots には DB の資格情報を渡さない**。受け渡しは Drive だけ。検証（JSON・結論・注目業種3件・lint・品質）を通らない出力は載せない。
+  **Drive は利用者本人の OAuth・権限 drive.file**（このアプリが作ったファイルだけ）。サービスアカウントは個人のマイドライブに
+  ファイルを作れない（容量が無い）ので使わない。dots が新しいファイルを作るとアプリから見えないため、空ファイルへ書かせる。
+  資格情報は GitHub Secrets `GOOGLE_OAUTH_CLIENT_ID / _CLIENT_SECRET / _REFRESH_TOKEN`、手元は `.secrets/`（gitignore 済み）。
+  取得は `scripts/google_oauth_setup.py`。OAuth 同意画面は「本番」公開済み（テストのままだと7日で失効）。公開に必要な
+  ホームページとプライバシーポリシーは `gh-pages` ブランチ（https://yi875z.github.io/short-ratio-intel/）。
+  **公開リポなので GitHub Actions で ChatGPT のログイン（auth.json）を使う方法は公式に不可**。
+  dots は Pro 専用。利用者が Plus に戻した場合は、ChatGPT のスケジュールタスクに同じ手順書を読ませて継続する。
+  model_used は `chatgpt-dots`。9/24・9/29 は dots で作成済み（lint 0・品質100%）。
 - **AIモデル（Gemini）の扱い**:
   - 既定モデルは `gemini-3.6-flash`（2026-09-30〜）。失敗時は 3.5 → 3.7 へ自動退避する。
     並びは `ai_reports.model_used` の実績順。8/25〜9/29 に先頭へ置いた 3.7 が書けたのは

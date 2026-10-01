@@ -42,6 +42,19 @@ GitHub Actions（平日19:00 JST）           Streamlit Community Cloud（常時
 - **Supabase**: Tokyo(ap-northeast-1) / nano。SQLAlchemy が Session pooler 接続文字列（`DATABASE_URL`）で直接続。REST API キーは使わない。
 - **秘密情報**: `DATABASE_URL` / `GEMINI_API_KEY` / `TAVILY_API_KEY` は GitHub Secrets と Streamlit Cloud Secrets に登録（リポジトリには含めない）。`.env` と `.streamlit/secrets.toml` は `.gitignore` 済み。
 
+### AIレポート（dots 方式・2026-10-01〜）
+
+- 平日 19:07: データ取得後、dots 向けの材料が Google Drive `short_ratio_agent/inputs/<日付>_input.md` に置かれる
+  （出力用の空ファイル `outputs/<日付>_report.json` も同時に作られる）。
+- 平日 19:40: ChatGPT の dots が定例作業として材料を読み、出力ファイルに JSON を書く（Slack に一言届く）。
+- 平日 20:30 と 23:30: `agent_report_import.yml` が取り込み、検証に通れば画面に載る。未記入なら何もしない。
+- うまくいかなかった日:
+  - dots が書いていない → ChatGPT の dots に「<日付> の作業を今やって」と頼み、Actions で `dots レポート取り込み` を手動実行。
+  - 検証で不合格（Actions が赤）→ ログの「不合格の理由」を見る。dots の出力を直して再実行するか、Streamlit の生成ボタンを使う。
+  - Google の許可が切れた（401 等）→ 手元で `python -m scripts.google_oauth_setup` をやり直し、Secrets を再登録（スクリプトの説明参照）。
+- 過去日の作り直し: `python -m scripts.publish_agent_bundle --date <日付>` で材料を置き、dots に頼み、
+  `python -m scripts.import_agent_report --from-drive --date <日付>` で取り込む。
+
 ### 自動取得（GitHub Actions）
 
 - 定義: `.github/workflows/daily_fetch.yml`。`schedule:` は持たない（2026-09-02 削除）。起動は Cloudflare Worker

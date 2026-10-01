@@ -242,6 +242,13 @@ def test_market_dod_is_filled_from_the_series_without_bridging_gaps():
     assert out.loc[3, "dod_change"] is None         # 9/25 が欠けているので埋めない
 
 
+def test_live_quotes_are_not_injected_for_past_dates(monkeypatch):
+    """過去日のレポートに今日の市場気配を入れない（dots の指摘・2026-10-01）。"""
+    monkeypatch.setattr(pb, "build_market_quotes_prompt_block", lambda: "LIVE_QUOTES")
+    assert "対象日が過去" in pb._live_market_block_for("2000-01-04")
+    assert pb._live_market_block_for("2999-12-31") == "LIVE_QUOTES"
+
+
 def test_market_dod_keeps_stored_values():
     import pandas as pd
 

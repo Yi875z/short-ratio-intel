@@ -373,6 +373,24 @@ def _sector_history_for_prompt(target_date: str, fallback_df):
     return fallback_df
 
 
+def _live_market_block_for(target_date: str) -> str:
+    """ライブ市場気配（取得時点の実測）をプロンプトに入れるのは、対象日が当日のときだけ。
+
+    過去日のレポートを作り直すと、後日の気配（例: 10/1 の日経・ドル円）が対象日（9/29）の実測として
+    入っていた。2026-10-01、dots（ChatGPT）が「後日の値を対象日の代用にしない」と自ら指摘して判明。
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    today_jst = datetime.now(ZoneInfo("Asia/Tokyo")).date().isoformat()
+    if str(target_date)[:10] < today_jst:
+        return (
+            "【ライブ市場気配】: 対象日が過去のため載せない（取得できるのは今日の気配で、"
+            "対象日の値の代わりにはならない）。指数・為替・金利は上の需給データとニュース見出しの範囲で扱う。"
+        )
+    return build_market_quotes_prompt_block()
+
+
 def _safe_sector_returns(target_date: str) -> dict:
     """業種別騰落率を取得する。失敗しても空辞書を返し、従来の組み立てを続ける。"""
     try:
@@ -529,7 +547,7 @@ def build_user_prompt(
     event_calendar_block = build_event_calendar_prompt_block(target_date)
     sq_week_case_block = _build_sq_week_case_block(target_date)
     institutional_flow_block = build_institutional_flow_prompt_block(target_date)
-    live_market_block = build_market_quotes_prompt_block()
+    live_market_block = _live_market_block_for(target_date)
     pressure_regime_block = build_pressure_regime_prompt_block(target_date)
 
     market_context = build_market_context_bundle(

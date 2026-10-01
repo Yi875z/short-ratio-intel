@@ -121,6 +121,11 @@ jobs:
       JQUANTS_API_KEY:   ${{ secrets.JQUANTS_API_KEY }}
       # 任意: 完了/失敗サマリーの Slack 通知
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      # dots（ChatGPT の常駐エージェント）との受け渡し用。利用者本人の Google の許可（drive.file）。
+      # 未設定なら材料を置かずに続行する（fail-soft）。取得は scripts/google_oauth_setup.py。
+      GOOGLE_OAUTH_CLIENT_ID:     ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
+      GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
+      GOOGLE_OAUTH_REFRESH_TOKEN: ${{ secrets.GOOGLE_OAUTH_REFRESH_TOKEN }}
       # 使用モデルは【あえてここに置かない】。config/settings.py の
       # GEMINI_MODEL_DEFAULT が唯一の正。ここに env を書くと settings.py の既定を
       # 上書きしてしまい、「既定だけ直したのに本番が変わらない」二重管理事故になる。
@@ -165,6 +170,12 @@ jobs:
           echo "TZ:   $TZ"; date
           echo "Run:  python -m scripts.fetch_short_ratio $ARGS"
           python -m scripts.fetch_short_ratio $ARGS
+
+      # dots 向けの材料を Google Drive に置く。AIレポート生成（上のステップ）が失敗しても置く
+      # （Gemini の混雑で全滅した日こそ dots に書かせたい）。失敗してもこのステップは成功で終わる。
+      - name: Publish bundle for dots
+        if: ${{ !cancelled() }}
+        run: python -m scripts.publish_agent_bundle ${{ inputs.date && format('--date {0}', inputs.date) || '' }}
 
       - name: Upload logs on failure
         if: failure()

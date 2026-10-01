@@ -1,0 +1,58 @@
+name: dots レポート取り込み
+
+# サブスクの AI エージェント（ChatGPT の dots）が Google Drive に書いたレポートを検証して保存する。
+#
+# 流れ（2026-10-01〜）:
+#   19:07 daily_fetch.yml がデータを取得し、材料と空の出力ファイルを Drive の short_ratio_agent/ に置く
+#   19:40 dots が材料を読み、出力ファイルにレポートの JSON を書く（ChatGPT 側の定例作業）
+#   20:30 このワークフローが取り込む（Cloudflare Worker jpx-report-scheduler から起動）
+#
+# dots がまだ書いていなければ何もしないで成功する（その日は既存のレポートのまま）。
+# 検証に通らなければ保存しないで失敗する（画面に載せないため。Actions の赤で気づける）。
+# 何度実行しても同じ内容で上書きするだけなので、重複起動のガードは置かない（AIの費用も発生しない）。
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: '対象日 YYYY-MM-DD（空欄なら DB の最新日）'
+        required: false
+        type: string
+      source:
+        # Worker は worker を渡す（他のワークフローと同じ入力名。受け付けないと Worker の起動が 422 になる）
+        description: '起動元（手動実行は manual のままでよい）'
+        required: false
+        default: manual
+        type: string
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TZ: Asia/Tokyo
+      DATABASE_URL:               ${{ secrets.DATABASE_URL }}
+      GOOGLE_OAUTH_CLIENT_ID:     ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
+      GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
+      GOOGLE_OAUTH_REFRESH_TOKEN: ${{ secrets.GOOGLE_OAUTH_REFRESH_TOKEN }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Import dots report from Google Drive
+        run: |
+          set -e
+          DATE_ARG="${{ inputs.date }}"
+          ARGS="--from-drive --model chatgpt-dots"
+          if [ -n "$DATE_ARG" ]; then ARGS="$ARGS --date $DATE_ARG"; fi
+          python -m scripts.import_agent_report $ARGS

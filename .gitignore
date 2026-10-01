@@ -47,3 +47,6 @@ graphify-out/
 .claude/
 .codex/
 .cursor/
+
+# Google Drive 受け渡し用の OAuth クライアント・許可（scripts/google_oauth_setup.py）。絶対にコミットしない
+.secrets/

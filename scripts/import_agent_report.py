@@ -18,6 +18,7 @@ scripts/import_agent_report.py
 使い方:
     python -m scripts.import_agent_report --date 2026-09-29 --file <report.json> --input <input.md> --dry-run
     python -m scripts.import_agent_report --date 2026-09-29 --file <report.json> --model chatgpt-dots
+    python -m scripts.import_agent_report --from-drive                 # 本番（DB 最新日・Drive から）
 """
 from __future__ import annotations
 
@@ -72,15 +73,38 @@ def validate_agent_report(raw_text: str, report_date: str, input_text: str = "")
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="外部エージェントのレポートJSONを検証して保存する")
-    parser.add_argument("--date", required=True, help="対象日 YYYY-MM-DD")
-    parser.add_argument("--file", required=True, help="エージェントが書いた JSON ファイル")
+    parser.add_argument("--date", default=None, help="対象日 YYYY-MM-DD（--from-drive では省略時 DB 最新日）")
+    parser.add_argument("--file", default=None, help="エージェントが書いた JSON ファイル（手元）")
+    parser.add_argument("--from-drive", action="store_true",
+                        help="Google Drive の受け渡し用フォルダから読む（本番。材料も Drive から照合に使う）")
     parser.add_argument("--input", default="", help="エージェントに渡した材料ファイル（lint の照合用）")
     parser.add_argument("--model", default="chatgpt-dots", help="ai_reports.model_used に記録する名前")
     parser.add_argument("--dry-run", action="store_true", help="検証だけして保存しない")
     args = parser.parse_args()
 
-    raw = Path(args.file).read_text(encoding="utf-8-sig")
-    input_text = Path(args.input).read_text(encoding="utf-8") if args.input else ""
+    if args.from_drive:
+        from src.storage import drive_exchange
+        from src.storage.db import get_latest_date
+
+        args.date = args.date or get_latest_date()
+        try:
+            raw = drive_exchange.fetch_agent_output(args.date)
+            folders = drive_exchange.ensure_agent_folders()
+            input_text = drive_exchange.download_text(
+                folders.inputs, drive_exchange.input_name(args.date)
+            ) or ""
+        except drive_exchange.DriveNotConfigured:
+            logger.warning("Google Drive の資格情報が未設定のため取り込まない")
+            return 0
+        if raw is None:
+            # 未記入はエラーにしない（その日は機械版・Gemini 版のまま。自己点検で気づける）
+            logger.warning(f"{args.date} のエージェント出力はまだ空（dots が未記入）。取り込まない")
+            return 0
+    else:
+        if not (args.file and args.date):
+            parser.error("--file と --date を指定するか、--from-drive を使う")
+        raw = Path(args.file).read_text(encoding="utf-8-sig")
+        input_text = Path(args.input).read_text(encoding="utf-8") if args.input else ""
     try:
         report, markdown, lint, quality = validate_agent_report(raw, args.date, input_text)
     except AgentReportRejected as exc:

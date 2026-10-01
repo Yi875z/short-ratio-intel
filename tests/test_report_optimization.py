@@ -83,6 +83,13 @@ def test_header_note_negating_balance_is_not_flagged():
     assert "flow_as_balance" not in _codes(line)
 
 
+def test_negated_certainty_is_not_flagged():
+    """「確信的な〜を識別できない」は否定の文脈（dots の 9/24 レポートの実文）。"""
+    line = "- 規制ありにもヘッジや権利取り関連の新規売りが含まれうるため、規制あり優位だけで確信的な弱気売りを識別できない。"
+    assert "overconfidence" not in _codes(line)
+    assert "overconfidence" in _codes("機関投資家による確信的な方向性売り。")
+
+
 def test_flags_hyperbole():
     assert "hyperbole" in _codes("市場構造はベアからブルへと完全に反転しており、")
     assert "hyperbole" in _codes("巨大な流動性津波によって売りポジションが洗い流された")

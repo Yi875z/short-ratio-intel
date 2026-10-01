@@ -242,7 +242,7 @@ def _chip_colors(e) -> tuple[str, str]:
         return "#d5f5e3", "#1e8449"   # 緑: 指数発効日
     if e.phase in ("announcement", "base_date", "watch"):
         return "#eaecee", "#566573"   # 灰: 発表・基準・ウォッチ
-    if e.category in ("sq", "rollover"):
+    if e.category == "derivatives":
         return "#ebdef0", "#7d3c98"   # 紫: SQ・先物ロール
     if e.region == "JP":
         return "#fdecea", "#c0392b"   # 赤: 日本マクロ

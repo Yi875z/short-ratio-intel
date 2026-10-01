@@ -86,14 +86,16 @@ def check_calendar_coverage(
     公表日が未発表で埋められない場合もあるが、その場合も「未確認のまま尽きている」と
     分かるほうが、黙って抜けるより良い。
     """
-    from config.market_calendar import CURATED_EVENTS
+    from src.macro_context.market_events import curated_coverage
 
     today = today or date.today()
     deadline = today + timedelta(days=horizon_days)
 
+    # 同じ種類・地域が複数系列に分かれていても最終日で判定する
     latest: dict[tuple[str, str], str] = {}
-    for iso, _name, category, region, _importance, _note in CURATED_EVENTS:
-        key = (category, region)
+    for series, last_date in curated_coverage():
+        key = (series.kind, series.region)
+        iso = last_date.isoformat()
         if iso > latest.get(key, ""):
             latest[key] = iso
 
@@ -113,7 +115,7 @@ def check_calendar_coverage(
                 f"{region}/{category} の登録が {last_iso} で尽きています"
                 + ("（既に過去）" if remaining < 0 else f"（残り{remaining}日）")
             ),
-            action="config/market_calendar.py に公式公表日を追記",
+            action="src/macro_context/market_events.py（共通正本）に公式公表日を追記し、JPX へ同期",
         ))
     return issues
 

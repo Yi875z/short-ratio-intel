@@ -235,6 +235,14 @@
   **単一の固定閾値で判定しない**。指標は自分自身の直近20営業日分布に対するZスコアと
   5日平均比へ変換してから複数条件で判定する。閾値は `config/pressure_thresholds.py` に集約。
   **欠損は補間しない**。入力が欠けたレジームは候補から外し、欠損入力名を画面に出す。
+- **市場イベント・カレンダーは JPX_Analysis_System と共通（2026-10-01 統一）**:
+  正本は `src/macro_context/market_events.py`（標準ライブラリのみ・HTML なし）。JPX 側の `core/market_events.py` は写しで、
+  JPX で `python scripts/sync_market_events.py` を流して揃える（JPX のテストが正本との一致を検査）。**写しを直接直さない**。
+  公式日程は `CURATED_SERIES` に**公式発表済みの日付だけ**を書く（推測で埋めない。尽きたら `check_calendar_coverage` が鳴る）。
+  SQ・指数リバランス・ISM・配当落ちはルール計算。行の表記は `format_event_line` の1つだけ（両システムのプロンプトで共通）。
+  画面の色分けは `category`（macro / derivatives / index_rebalance / dividend / politics / gpif_watch）、
+  指標の判別は `kind`（fomc / boj / cpi / sq / roll / tankan …）を使う。`event_calendar.py` は空売り用の窓口
+  （対象日の前後窓・相対日・空売りの解釈ルール）だけを持つ。
 - 詳細な運用手順は `docs/operation_manual.md`、クラウド環境の再構築は `DEPLOY.md` を正とする。
 
 ---

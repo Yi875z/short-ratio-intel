@@ -23,39 +23,48 @@ from src.macro_context.pipeline_health import (
 # ------------------------------------------------------------------
 # カレンダーの穴
 # ------------------------------------------------------------------
+def _set_series(monkeypatch, rows):
+    """共通正本の公式日程を (kind, region, 最終日) だけの系列に差し替える。"""
+    import src.macro_context.market_events as me
+
+    series = tuple(
+        me.CuratedSeries(kind, "macro", region, "medium", "", "", "", {last: kind})
+        for kind, region, last in rows
+    )
+    monkeypatch.setattr(me, "CURATED_SERIES", series)
+
+
+def test_単発イベントは登録切れとして鳴らさない(monkeypatch):
+    """米中間選挙のような単発イベントは、過ぎても「尽きた」扱いにしない。"""
+    import src.macro_context.market_events as me
+
+    monkeypatch.setattr(me, "CURATED_SERIES", (
+        me.CuratedSeries("election", "politics", "US", "high", "", "", "",
+                         {date(2026, 11, 3): "米中間選挙"}, recurring=False),
+    ))
+    assert check_calendar_coverage(today=date(2026, 12, 1), horizon_days=60) == []
+
+
 def test_登録が尽きたカテゴリを検出する(monkeypatch):
     """公表日が追記されず先が尽きているカテゴリを鳴らす。"""
-    import config.market_calendar as calendar
-
-    monkeypatch.setattr(calendar, "CURATED_EVENTS", [
-        ("2026-05-19", "日本GDP 1次速報", "gdp", "JP", "medium", ""),
-        ("2026-12-01", "米GDP", "gdp", "US", "medium", ""),
-    ])
+    _set_series(monkeypatch, [("gdp", "JP", date(2026, 5, 19)), ("gdp", "US", date(2026, 12, 1))])
 
     issues = check_calendar_coverage(today=date(2026, 9, 1), horizon_days=60)
 
     assert len(issues) == 1
     assert "JP/gdp" in issues[0].message
     assert issues[0].severity == "high"      # 既に過去なので high
-    assert "market_calendar.py" in issues[0].action
+    assert "market_events.py" in issues[0].action
 
 
 def test_先の日程が十分あれば鳴らさない(monkeypatch):
-    import config.market_calendar as calendar
-
-    monkeypatch.setattr(calendar, "CURATED_EVENTS", [
-        ("2026-12-01", "日本GDP", "gdp", "JP", "medium", ""),
-    ])
+    _set_series(monkeypatch, [("gdp", "JP", date(2026, 12, 1))])
     assert check_calendar_coverage(today=date(2026, 9, 1), horizon_days=60) == []
 
 
 def test_尽きかけは中程度として鳴らす(monkeypatch):
     """まだ未来だが期限内に尽きる場合は medium。"""
-    import config.market_calendar as calendar
-
-    monkeypatch.setattr(calendar, "CURATED_EVENTS", [
-        ("2026-09-20", "日本GDP", "gdp", "JP", "medium", ""),
-    ])
+    _set_series(monkeypatch, [("gdp", "JP", date(2026, 9, 20))])
     issues = check_calendar_coverage(today=date(2026, 9, 1), horizon_days=60)
 
     assert len(issues) == 1

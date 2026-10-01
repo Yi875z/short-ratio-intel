@@ -786,7 +786,7 @@ def _build_sq_week_case_block(target_date: str) -> str:
     通常日はプロンプト肥大とGeminiクォータ消費を避けるため注入しない。
     """
     events = get_events_for_date(target_date, before_days=2, after_days=5)
-    if not any(e.category in ("sq", "rollover") for e in events):
+    if not any(e.category == "derivatives" for e in events):
         return ""
     past_cases = load_external_knowledge("past_cases")
     if not past_cases:

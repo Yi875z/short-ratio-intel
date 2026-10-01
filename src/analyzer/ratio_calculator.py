@@ -112,13 +112,23 @@ class RatioCalculator:
         return df
 
     def _get_previous_day_df(self, target_date: str) -> pd.DataFrame:
-        """前営業日のデータを取得"""
-        from datetime import datetime, timedelta
-        dt = datetime.strptime(target_date, "%Y-%m-%d")
+        """前営業日のデータを取得する。前営業日が欠測なら空を返す（前日比は None になる）。
 
-        for i in range(1, 5):  # 最大4日前まで探す
+        以前は暦日で最大4日前までしか探さず、連休明け（9/18→9/24 は6日）は全業種の前日比が
+        N/A になっていた（dots の 9/24 レポートが「比率前日比が全て N/A」と指摘して判明）。
+        14日前まで遡って直近の保存日を探し、その日が本当に前営業日か（間に営業日を挟まないか）を
+        確かめる。挟んでいれば、欠測をまたいだ比較を「前日比」と呼ばないために使わない
+        （PROJECT_RULES「前日比は元の系列の1つ前とだけ比べる」）。
+        """
+        from datetime import datetime, timedelta
+
+        from src.storage.db import is_previous_trading_day
+
+        dt = datetime.strptime(target_date, "%Y-%m-%d")
+        for i in range(1, 15):
             prev = (dt - timedelta(days=i)).strftime("%Y-%m-%d")
             df = get_short_ratio_df(date=prev)
-            if not df.empty:
-                return df
+            if df.empty:
+                continue
+            return df if is_previous_trading_day(prev, target_date) else pd.DataFrame()
         return pd.DataFrame()

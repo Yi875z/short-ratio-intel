@@ -248,6 +248,21 @@ def test_market_dod_is_filled_from_the_series_without_bridging_gaps():
     assert out.loc[3, "dod_change"] is None         # 9/25 が欠けているので埋めない
 
 
+def test_previous_trading_day_spans_holidays_but_not_missing_days():
+    """連休明け（9/18→9/24）は前営業日として比べ、営業日を挟む欠測は比べない。
+
+    業種別の前日比は暦日で最大4日前までしか探さず、9/24 は全業種 N/A だった（dots の指摘）。
+    """
+    from src.storage.db import skips_trading_day
+
+    trading = {"2026-09-17", "2026-09-18", "2026-09-24", "2026-09-25", "2026-09-28"}
+    assert not skips_trading_day("2026-09-18", "2026-09-24", trading)   # 間は連休
+    assert skips_trading_day("2026-09-24", "2026-09-28", trading)       # 9/25 を挟む
+    # 手がかりが無いときは暦日4日以内だけを隣接とみなす
+    assert not skips_trading_day("2026-09-25", "2026-09-28", set())
+    assert skips_trading_day("2026-09-18", "2026-09-24", set())
+
+
 def test_live_quotes_are_not_injected_for_past_dates(monkeypatch):
     """過去日のレポートに今日の市場気配を入れない（dots の指摘・2026-10-01）。"""
     monkeypatch.setattr(pb, "build_market_quotes_prompt_block", lambda: "LIVE_QUOTES")

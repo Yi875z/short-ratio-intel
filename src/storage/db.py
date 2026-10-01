@@ -481,15 +481,31 @@ def fill_market_dod(df: pd.DataFrame, trading_dates: set[str] | None = None) -> 
         prev_ratio, cur_ratio = df.at[i - 1, "short_ratio_pct"], df.at[i, "short_ratio_pct"]
         if pd.isna(prev_ratio) or pd.isna(cur_ratio):
             continue
-        if trading_dates and cur_date in trading_dates:
-            skipped = any(prev_date < d < cur_date for d in trading_dates)
-        else:
-            gap = (_date.fromisoformat(cur_date) - _date.fromisoformat(prev_date)).days
-            skipped = gap > _DOD_MAX_GAP_DAYS_WITHOUT_CALENDAR
-        if not skipped:
+        if not skips_trading_day(prev_date, cur_date, trading_dates):
             df.at[i, "dod_change"] = round(float(cur_ratio) - float(prev_ratio), 2)
     df["dod_change"] = df["dod_change"].where(df["dod_change"].notna(), None)
     return df
+
+
+def skips_trading_day(prev_date: str, cur_date: str, trading_dates: set[str] | None) -> bool:
+    """prev_date と cur_date の間に営業日が挟まっているか（＝cur の前営業日が prev ではないか）。
+
+    営業日の手がかり（騰落銘柄数の日付）があればそれで判定し、無ければ暦日差4日以内だけを隣接とみなす。
+    """
+    from datetime import date as _date
+
+    if trading_dates and cur_date in trading_dates:
+        return any(prev_date < d < cur_date for d in trading_dates)
+    gap = (_date.fromisoformat(cur_date) - _date.fromisoformat(prev_date)).days
+    return gap > _DOD_MAX_GAP_DAYS_WITHOUT_CALENDAR
+
+
+def is_previous_trading_day(prev_date: str, cur_date: str) -> bool:
+    """prev_date が cur_date の前営業日か（間に営業日を挟まないか）。業種別の前日比で使う。"""
+    engine = get_db_engine()
+    with Session(engine) as session:
+        trading_dates = _breadth_trading_dates(session, prev_date, cur_date)
+    return not skips_trading_day(prev_date, cur_date, trading_dates)
 
 
 # ------------------------------------------------------------------

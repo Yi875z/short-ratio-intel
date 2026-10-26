@@ -412,9 +412,17 @@ def run(args: argparse.Namespace) -> int:
             logger.info(f"{report_date} のAIレポートは保存済みのため再生成しない（--skip-existing-report）")
             used_model = "（既存を維持）"
         elif not args.no_report:
-            report_chars, report_obj, used_model = _step_report(
-                report_date, today_summary, weekly_df, anomalies, auto_fetch_news
-            )
+            # 2026-10-01 から AIレポートの書き手は dots が主で、Gemini は補助。
+            # Gemini が全滅しても取得・テーマは済んでおり、dots への材料は workflow の次の
+            # ステップが Drive に置くので、✕ にせず警告で終える
+            # （10/22 は 503 で ✕ になったが dots 版が保存済みだった）。
+            try:
+                report_chars, report_obj, used_model = _step_report(
+                    report_date, today_summary, weekly_df, anomalies, auto_fetch_news
+                )
+            except Exception as exc:  # noqa: BLE001 補助経路の失敗で本処理を落とさない
+                logger.warning(f"Gemini AIレポート生成に失敗（dots の版を待つ）: {exc}")
+                used_model = "（Gemini失敗・dots待ち）"
 
     highlights = _format_report_highlights(report_obj)
     breadth_text = f"{breadth_result.get('saved')}件"

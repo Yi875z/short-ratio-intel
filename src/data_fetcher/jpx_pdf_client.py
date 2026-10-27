@@ -130,6 +130,9 @@ class JPXShortSellingClient:
             return []
 
         text = _PDFTextExtractor.extract(pdf)
+        # 行ラベル「その他（33業種外）」の 33 を値として拾わないよう先に除く
+        # （対応表を正しく読めるようになって業種名が数字に化けなくなった代わりに、ラベル内の数字が出てくる）。
+        text = text.replace("33業種外", "業種外")
         values = _numbers_from_text(text)
         needed = len(_SECTOR_ORDER) * 7
         if len(values) < needed:
@@ -383,8 +386,26 @@ class _PDFTextExtractor:
             if b"begincmap" not in stream:
                 continue
             text = stream.decode("latin1", errors="ignore")
-            for src, dst in re.findall(r"<([0-9A-Fa-f]{4})>\s+<([0-9A-Fa-f]{4})>", text):
-                cmap[int(src, 16)] = chr(int(dst, 16))
+            for block in re.findall(r"beginbfchar(.*?)endbfchar", text, re.S):
+                for src, dst in re.findall(r"<([0-9A-Fa-f]{4})>\s*<([0-9A-Fa-f]{4})>", block):
+                    cmap[int(src, 16)] = chr(int(dst, 16))
+            # 2026-10-26 の PDF から対応表が bfrange（範囲指定）で書かれるようになった。
+            # 旧実装は bfchar の形しか読まず、bfrange 内の <lo> <hi> や配列要素の並びを
+            # 1対1の対応と誤読して業種名が数字に化け、列がずれて全件破棄になっていた。
+            for block in re.findall(r"beginbfrange(.*?)endbfrange", text, re.S):
+                for lo, hi, dst, arr in re.findall(
+                    r"<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>\s*(?:<([0-9A-Fa-f]+)>|\[([^\]]*)\])",
+                    block,
+                ):
+                    lo_code, hi_code = int(lo, 16), int(hi, 16)
+                    if arr:
+                        dsts = re.findall(r"<([0-9A-Fa-f]+)>", arr)
+                        for offset, d in enumerate(dsts[: hi_code - lo_code + 1]):
+                            cmap[lo_code + offset] = chr(int(d, 16))
+                    else:
+                        base = int(dst, 16)
+                        for offset in range(hi_code - lo_code + 1):
+                            cmap[lo_code + offset] = chr(base + offset)
         return cmap
 
     @staticmethod
